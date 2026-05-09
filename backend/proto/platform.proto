@@ -1,0 +1,194 @@
+syntax = "proto3";
+
+package simplechat.v1;
+
+service ChatService {
+  rpc SendMessage (ChatRequest) returns (ChatResponse);
+}
+
+service ModelService {
+  rpc Generate (GenerateRequest) returns (GenerateResponse);
+  rpc ListModels (ModelListRequest) returns (ModelListResponse);
+}
+
+service ActivityService {
+  rpc ListConversations (ListConversationsRequest) returns (ConversationPage);
+  rpc GetMessages (ConversationRequest) returns (MessageList);
+  rpc UpdateConversation (UpdateConversationRequest) returns (ConversationResponse);
+  rpc DeleteConversation (ConversationRequest) returns (DeleteResponse);
+  rpc ListLogs (ListLogsRequest) returns (LogPage);
+  rpc RecordLog (LogEntry) returns (LogResponse);
+  rpc GetUsage (WorkspaceRequest) returns (UsageResponse);
+}
+
+message WorkspaceRequest {
+  string workspace_id = 1;
+}
+
+message ProviderConfig {
+  string base_url = 1;
+  string api_key = 2;
+  string model = 3;
+}
+
+message ChatTurn {
+  string role = 1;
+  string content = 2;
+}
+
+message ChatAttachment {
+  string name = 1;
+  string type = 2;
+  int32 size = 3;
+  string content = 4;
+  bool truncated = 5;
+}
+
+message ChatRequest {
+  string workspace_id = 1;
+  string request_id = 2;
+  string conversation_id = 3;
+  string model = 4;
+  repeated ChatTurn messages = 5;
+  ProviderConfig provider = 6;
+  repeated ChatAttachment attachments = 7;
+}
+
+message ChatResponse {
+  ChatMessage message = 1;
+  string conversation_id = 2;
+  string model = 3;
+  int32 prompt_tokens = 4;
+  int32 completion_tokens = 5;
+}
+
+message GenerateRequest {
+  string workspace_id = 1;
+  string request_id = 2;
+  string conversation_id = 3;
+  string model = 4;
+  repeated ChatTurn messages = 5;
+  repeated ChatAttachment attachments = 6;
+  ProviderConfig provider = 7;
+}
+
+message GenerateResponse {
+  string id = 1;
+  string conversation_id = 2;
+  string role = 3;
+  string content = 4;
+  string model = 5;
+  int32 prompt_tokens = 6;
+  int32 completion_tokens = 7;
+  string created_at = 8;
+}
+
+message ModelListRequest {
+  ProviderConfig provider = 1;
+}
+
+message ModelListResponse {
+  repeated string models = 1;
+}
+
+message Conversation {
+  string id = 1;
+  string workspace_id = 2;
+  string title = 3;
+  string model = 4;
+  string created_at = 5;
+  string updated_at = 6;
+  int32 message_count = 7;
+  bool pinned = 8;
+}
+
+message ChatMessage {
+  string id = 1;
+  string conversation_id = 2;
+  string role = 3;
+  string content = 4;
+  string created_at = 5;
+  int32 tokens = 6;
+}
+
+message ListConversationsRequest {
+  string workspace_id = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+  string search = 4;
+}
+
+message ConversationRequest {
+  string workspace_id = 1;
+  string id = 2;
+}
+
+message UpdateConversationRequest {
+  string workspace_id = 1;
+  string id = 2;
+  string title = 3;
+  bool pinned = 4;
+  bool has_pinned = 5;
+}
+
+message ConversationPage {
+  repeated Conversation data = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+  int32 total = 4;
+  int32 total_pages = 5;
+}
+
+message ConversationResponse {
+  Conversation conversation = 1;
+}
+
+message MessageList {
+  repeated ChatMessage data = 1;
+}
+
+message DeleteResponse {
+  bool deleted = 1;
+  string id = 2;
+}
+
+message LogEntry {
+  string id = 1;
+  string timestamp = 2;
+  string user = 3;
+  string service = 4;
+  string action = 5;
+  string status = 6;
+  string correlation_id = 7;
+  string metadata_json = 8;
+}
+
+message ListLogsRequest {
+  string workspace_id = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+  string service = 4;
+  string status = 5;
+  string date = 6;
+  string search = 7;
+}
+
+message LogPage {
+  repeated LogEntry data = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+  int32 total = 4;
+  int32 total_pages = 5;
+}
+
+message LogResponse {
+  LogEntry log = 1;
+}
+
+message UsageResponse {
+  int32 active_users = 1;
+  int32 conversations = 2;
+  int32 messages = 3;
+  double error_rate = 4;
+  int32 average_latency_ms = 5;
+}
