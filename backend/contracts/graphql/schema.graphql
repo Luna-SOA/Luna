@@ -1,0 +1,64 @@
+type Conversation {
+  id: ID!
+  workspaceId: ID!
+  title: String!
+  model: String!
+  createdAt: String!
+  updatedAt: String!
+  messageCount: Int!
+  pinned: Boolean
+}
+
+type ChatMessage {
+  id: ID!
+  conversationId: ID!
+  role: String!
+  content: String!
+  createdAt: String!
+  tokens: Int
+}
+
+type ConversationPage {
+  data: [Conversation!]!
+  page: Int!
+  pageSize: Int!
+  total: Int!
+  totalPages: Int!
+}
+
+type MessageList {
+  data: [ChatMessage!]!
+}
+
+type LogEntry {
+  id: ID!
+  timestamp: String!
+  user: String!
+  service: String!
+  action: String!
+  status: String!
+  correlationId: String!
+}
+
+type LogPage {
+  data: [LogEntry!]!
+  page: Int!
+  pageSize: Int!
+  total: Int!
+  totalPages: Int!
+}
+
+type Usage {
+  activeUsers: Int!
+  conversations: Int!
+  messages: Int!
+  errorRate: Float!
+  averageLatencyMs: Int!
+}
+
+type Query {
+  conversations(page: Int, pageSize: Int, search: String): ConversationPage!
+  conversationMessages(id: ID!): MessageList!
+  logs(page: Int, pageSize: Int, service: String, status: String, date: String, search: String): LogPage!
+  usage: Usage!
+}
