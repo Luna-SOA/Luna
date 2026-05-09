@@ -1,0 +1,32 @@
+{
+  "name": "soa-clean-microservices",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Clean Node.js microservices project with API Gateway, gRPC, REST, GraphQL, Kafka and SQLite.",
+  "workspaces": [
+    "backend/gateway",
+    "backend/services/*",
+    "frontend/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n web,gateway,chat,model,activity -c green,blue,cyan,yellow,magenta \"npm run dev -w @luna/web\" \"npm run dev -w @soa/api-gateway\" \"npm run dev -w @soa/chat-service\" \"npm run dev -w @soa/model-service\" \"npm run dev -w @soa/activity-service\"",
+    "dev:backend": "concurrently -n gateway,chat,model,activity -c blue,cyan,yellow,magenta \"npm run dev -w @soa/api-gateway\" \"npm run dev -w @soa/chat-service\" \"npm run dev -w @soa/model-service\" \"npm run dev -w @soa/activity-service\"",
+    "dev:frontend": "npm run dev -w @luna/web",
+    "start": "concurrently -n web,gateway,chat,model,activity -c green,blue,cyan,yellow,magenta \"npm run start -w @luna/web\" \"npm run start -w @soa/api-gateway\" \"npm run start -w @soa/chat-service\" \"npm run start -w @soa/model-service\" \"npm run start -w @soa/activity-service\"",
+    "start:backend": "concurrently -n gateway,chat,model,activity -c blue,cyan,yellow,magenta \"npm run start -w @soa/api-gateway\" \"npm run start -w @soa/chat-service\" \"npm run start -w @soa/model-service\" \"npm run start -w @soa/activity-service\"",
+    "build:backend": "npm run build -w @soa/api-gateway && npm run build -w @soa/chat-service && npm run build -w @soa/model-service && npm run build -w @soa/activity-service",
+    "build:frontend": "npm run build -w @luna/web",
+    "build": "npm run build:backend && npm run build:frontend",
+    "typecheck": "npm run typecheck -w @soa/api-gateway && npm run typecheck -w @soa/chat-service && npm run typecheck -w @soa/model-service && npm run typecheck -w @soa/activity-service && npm run typecheck -w @luna/web",
+    "docker:kafka": "docker compose up -d kafka",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down --remove-orphans"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.3"
+  }
+}
