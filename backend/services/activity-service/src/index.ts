@@ -203,3 +203,133 @@ function messageFromRow(row: MessageRow) {
     content: row.content,
     createdAt: row.created_at,
     tokens: row.tokens ?? 0
+  };
+}
+
+function logFromRow(row: LogRow): LogPayload {
+  return {
+    id: row.id,
+    timestamp: row.timestamp,
+    user: row.user,
+    service: row.service,
+    action: row.action,
+    status: validStatus(row.status),
+    correlationId: row.correlation_id,
+    metadata: parseJson(row.metadata_json)
+  };
+}
+
+function grpcConversation(conversation: ReturnType<typeof conversationFromRow>) {
+  return {
+    id: conversation.id,
+    workspace_id: conversation.workspaceId,
+    title: conversation.title,
+    model: conversation.model,
+    created_at: conversation.createdAt,
+    updated_at: conversation.updatedAt,
+    message_count: conversation.messageCount,
+    pinned: conversation.pinned
+  };
+}
+
+function grpcMessage(message: ReturnType<typeof messageFromRow> | ChatMessagePayload) {
+  return {
+    id: message.id,
+    conversation_id: message.conversationId,
+    role: message.role,
+    content: message.content,
+    created_at: message.createdAt,
+    tokens: message.tokens ?? 0
+  };
+}
+
+function grpcLog(log: LogPayload) {
+  return {
+    id: log.id,
+    timestamp: log.timestamp,
+    user: log.user,
+    service: log.service,
+    action: log.action,
+    status: log.status,
+    correlation_id: log.correlationId,
+    metadata_json: JSON.stringify(log.metadata ?? {})
+  };
+}
+
+function logFromGrpc(input: any): LogPayload {
+  return {
+    id: String(input?.id || randomUUID()),
+    timestamp: String(input?.timestamp || new Date().toISOString()),
+    user: String(input?.user || "unknown"),
+    service: String(input?.service || "unknown-service"),
+    action: String(input?.action || "unknown.action"),
+    status: validStatus(input?.status),
+    correlationId: String(input?.correlation_id || randomUUID()),
+    metadata: typeof input?.metadata_json === "string" ? parseJson(input.metadata_json) : {}
+  };
+}
+
+function addLog(log: LogPayload) {
+  db.prepare("INSERT OR REPLACE INTO logs (id, timestamp, user, service, action, status, correlation_id, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(log.id, log.timestamp, log.user, log.service, log.action, validStatus(log.status), log.correlationId, JSON.stringify(log.metadata ?? {}));
+}
+
+function addActivityLog(event: EventEnvelope<unknown>, workspaceIdValue: string, action: string, metadata: Record<string, unknown>) {
+  const log: LogPayload = {
+    id: `${event.id}:activity`,
+    timestamp: new Date().toISOString(),
+    user: workspaceLabel(workspaceIdValue),
+    service: serviceName,
+    action,
+    status: "success",
+    correlationId: event.correlationId,
+    metadata
+  };
+  addLog(log);
+  void publish(topics.logs, "system.log.created", log, event.correlationId);
+}
+
+function upsertConversation(payload: ChatEventPayload) {
+  const now = new Date().toISOString();
+  const existing = db.prepare("SELECT * FROM conversations WHERE id = ?").get(payload.conversationId) as ConversationRow | undefined;
+  if (!existing) {
+    db.prepare("INSERT INTO conversations (id, workspace_id, title, model, created_at, updated_at, message_count, pinned) VALUES (?, ?, ?, ?, ?, ?, 0, 0)")
+      .run(payload.conversationId, payload.workspaceId, payload.title || "New conversation", payload.model || "unknown-model", now, now);
+    return;
+  }
+  db.prepare("UPDATE conversations SET title = COALESCE(NULLIF(?, ''), title), model = ?, updated_at = ? WHERE id = ?")
+    .run(payload.title || existing.title, payload.model || existing.model, now, payload.conversationId);
+}
+
+function saveMessageEvent(payload: ChatEventPayload) {
+  db.exec("BEGIN");
+  try {
+    upsertConversation(payload);
+    db.prepare("INSERT OR IGNORE INTO messages (id, conversation_id, role, content, created_at, tokens) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(payload.message.id, payload.conversationId, payload.message.role, payload.message.content, payload.message.createdAt, payload.message.tokens ?? null);
+    const count = db.prepare("SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?").get(payload.conversationId) as { count?: number } | undefined;
+    db.prepare("UPDATE conversations SET message_count = ?, updated_at = ? WHERE id = ?")
+      .run(count?.count ?? 0, new Date().toISOString(), payload.conversationId);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function listConversations(input: { workspaceId: string; page?: unknown; pageSize?: unknown; search?: unknown }) {
+  const { page, pageSize, offset } = pageParams(input.page, input.pageSize);
+  const search = typeof input.search === "string" && input.search.trim() ? `%${input.search.trim().toLowerCase()}%` : undefined;
+  const where = search ? "WHERE workspace_id = ? AND (LOWER(title) LIKE ? OR LOWER(model) LIKE ?)" : "WHERE workspace_id = ?";
+  const params = search ? [input.workspaceId, search, search] : [input.workspaceId];
+  const total = (db.prepare(`SELECT COUNT(*) AS total FROM conversations ${where}`).get(...params) as { total?: number } | undefined)?.total ?? 0;
+  const rows = db.prepare(`SELECT * FROM conversations ${where} ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, offset) as ConversationRow[];
+  return { data: rows.map(conversationFromRow), page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
+}
+
+function findConversation(id: string, workspaceIdValue: string) {
+  const row = db.prepare("SELECT * FROM conversations WHERE id = ? AND workspace_id = ?").get(id, workspaceIdValue) as ConversationRow | undefined;
+  if (!row) throw grpcError(grpc.status.NOT_FOUND, "Conversation not found");
+  return conversationFromRow(row);
+}
+
