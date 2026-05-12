@@ -263,3 +263,138 @@ function lastRequestMessage(req: Request) {
 
 function chatGatewayMetadata(req: Request, step: number, extra: Record<string, unknown> = {}) {
   const body = req.body && typeof req.body === "object" ? req.body as Record<string, any> : {};
+  const provider = body.provider && typeof body.provider === "object" ? body.provider : undefined;
+  const attachments = Array.isArray(body.attachments) ? body.attachments : [];
+  return {
+    step,
+    requestId: correlationId(req),
+    conversationId: typeof body.conversationId === "string" ? body.conversationId : "",
+    model: typeof body.model === "string" ? body.model : typeof provider?.model === "string" ? provider.model : "",
+    promptPreview: lastRequestMessage(req),
+    attachmentCount: attachments.length,
+    attachmentNames: attachments.map((file) => typeof file?.name === "string" ? file.name : "attachment"),
+    ...extra
+  };
+}
+
+async function listLogs(req: Request) {
+  return logPageFromGrpc(await unary(grpcClients.activity, "ListLogs", {
+    workspace_id: workspaceId(req),
+    page: req.query.page,
+    page_size: req.query.pageSize,
+    service: req.query.service,
+    status: req.query.status,
+    date: req.query.date,
+    search: req.query.search
+  }));
+}
+
+function route(handler: (req: Request, res: Response) => Promise<void> | void) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    Promise.resolve(handler(req, res)).catch(next);
+  };
+}
+
+const graphqlSchemaText = `
+type Conversation { id: ID!, workspaceId: ID!, title: String!, model: String!, createdAt: String!, updatedAt: String!, messageCount: Int!, pinned: Boolean! }
+type ChatMessage { id: ID!, conversationId: ID!, role: String!, content: String!, createdAt: String!, tokens: Int }
+type LogEntry { id: ID!, timestamp: String!, user: String!, service: String!, action: String!, status: String!, correlationId: String! }
+type ConversationPage { data: [Conversation!]!, page: Int!, pageSize: Int!, total: Int!, totalPages: Int! }
+type MessageList { data: [ChatMessage!]! }
+type LogPage { data: [LogEntry!]!, page: Int!, pageSize: Int!, total: Int!, totalPages: Int! }
+type Usage { activeUsers: Int!, conversations: Int!, messages: Int!, errorRate: Float!, averageLatencyMs: Int! }
+type Query {
+  models: [String!]!
+  conversations(page: Int, pageSize: Int, search: String): ConversationPage!
+  conversationMessages(id: ID!): MessageList!
+  logs(page: Int, pageSize: Int, service: String, status: String, date: String, search: String): LogPage!
+  usage: Usage!
+}`;
+
+const graphqlSchema = buildSchema(graphqlSchemaText);
+
+function graphqlRoot(req: Request) {
+  return {
+    models: async () => {
+      const result = await unary<any>(grpcClients.model, "ListModels", {});
+      return Array.isArray(result.models) ? result.models : [];
+    },
+    conversations: async (args: { page?: number; pageSize?: number; search?: string }) => conversationPageFromGrpc(await unary(grpcClients.activity, "ListConversations", {
+      workspace_id: workspaceId(req),
+      page: args.page,
+      page_size: args.pageSize,
+      search: args.search
+    })),
+    conversationMessages: async (args: { id: string }) => messageListFromGrpc(await unary(grpcClients.activity, "GetMessages", { workspace_id: workspaceId(req), id: args.id })),
+    logs: async (args: { page?: number; pageSize?: number; service?: string; status?: string; date?: string; search?: string }) => logPageFromGrpc(await unary(grpcClients.activity, "ListLogs", {
+      workspace_id: workspaceId(req),
+      page: args.page,
+      page_size: args.pageSize,
+      service: args.service,
+      status: args.status,
+      date: args.date,
+      search: args.search
+    })),
+    usage: async () => usageFromGrpc(await unary(grpcClients.activity, "GetUsage", { workspace_id: workspaceId(req) }))
+  };
+}
+
+type LogClient = { res: Response; workspace: string; query: Request["query"] };
+const logClients = new Set<LogClient>();
+
+function logMatchesQuery(entry: LogPayload, query: Request["query"]) {
+  if (typeof query.service === "string" && query.service.trim() && entry.service !== query.service.trim()) return false;
+  if (typeof query.status === "string" && query.status.trim() && entry.status !== query.status.trim()) return false;
+  if (typeof query.date === "string" && query.date.trim() && !entry.timestamp.startsWith(query.date.trim())) return false;
+  if (typeof query.search === "string" && query.search.trim()) {
+    const search = query.search.trim().toLowerCase();
+    const value = `${entry.service} ${entry.action} ${entry.status} ${entry.correlationId} ${JSON.stringify(entry.metadata ?? {})}`.toLowerCase();
+    if (!value.includes(search)) return false;
+  }
+  return true;
+}
+
+function broadcastLog(entry: LogPayload) {
+  if (logClients.size === 0) return;
+  const data = `data: ${JSON.stringify(entry)}\n\n`;
+  for (const client of logClients) {
+    if (client.workspace === entry.user && logMatchesQuery(entry, client.query) && !client.res.writableEnded) client.res.write(data);
+  }
+}
+
+function grpcLogPayload(log: LogPayload) {
+  return {
+    id: log.id,
+    timestamp: log.timestamp,
+    user: log.user,
+    service: log.service,
+    action: log.action,
+    status: log.status,
+    correlation_id: log.correlationId,
+    metadata_json: jsonMetadata(log.metadata)
+  };
+}
+
+function makeLog(req: Request, action: string, status: LogStatus, metadata: Record<string, unknown> = {}): LogPayload {
+  return {
+    id: randomUUID(),
+    timestamp: new Date().toISOString(),
+    user: workspaceLabel(req),
+    service: serviceName,
+    action,
+    status,
+    correlationId: correlationId(req),
+    metadata
+  };
+}
+
+async function recordAndBroadcastLog(log: LogPayload) {
+  try {
+    await unary(grpcClients.activity, "RecordLog", grpcLogPayload(log));
+  } catch (error) {
+    logger.warn({ error, action: log.action }, "failed to record activity log with gRPC");
+  }
+  broadcastLog(log);
+  await publish(topics.logs, "system.log.created", log, log.correlationId);
+}
+
