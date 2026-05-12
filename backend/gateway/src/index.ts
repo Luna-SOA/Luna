@@ -128,3 +128,138 @@ async function startKafkaProducer() {
   if (brokers.length === 0 || brokers.includes("disabled")) return;
   const kafka = new Kafka({ clientId: serviceName, brokers, logLevel: logLevel.ERROR });
   await ensureKafkaTopics(kafka);
+  producer = kafka.producer({ allowAutoTopicCreation: true });
+  await producer.connect();
+  logger.info({ brokers }, "kafka producer connected");
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function ensureKafkaTopics(kafka: Kafka) {
+  const admin = kafka.admin();
+  await admin.connect();
+  try {
+    await admin.createTopics({ waitForLeaders: true, topics: topicNames.map((topic) => ({ topic, numPartitions: 1, replicationFactor: 1 })) });
+  } finally {
+    await admin.disconnect().catch(() => undefined);
+  }
+}
+
+async function publish(topic: string, type: string, payload: unknown, correlation: string) {
+  if (!producer) return;
+  try {
+    await producer.send({ topic, messages: [{ key: correlation, value: JSON.stringify(makeEnvelope(type, payload, correlation)) }] });
+  } catch (error) {
+    logger.warn({ error, topic }, "failed to publish kafka event");
+  }
+}
+
+function jsonMetadata(value: unknown) {
+  return JSON.stringify(value ?? {});
+}
+
+function parseMetadata(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) return {};
+  try {
+    return JSON.parse(value) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function messageFromGrpc(input: any) {
+  return {
+    id: String(input?.id ?? ""),
+    conversationId: String(input?.conversation_id ?? ""),
+    role: String(input?.role ?? "assistant"),
+    content: String(input?.content ?? ""),
+    createdAt: String(input?.created_at ?? new Date().toISOString()),
+    tokens: Number(input?.tokens ?? 0)
+  };
+}
+
+function conversationFromGrpc(input: any) {
+  return {
+    id: String(input?.id ?? ""),
+    workspaceId: String(input?.workspace_id ?? ""),
+    title: String(input?.title ?? "Untitled conversation"),
+    model: String(input?.model ?? "unknown-model"),
+    createdAt: String(input?.created_at ?? new Date().toISOString()),
+    updatedAt: String(input?.updated_at ?? new Date().toISOString()),
+    messageCount: Number(input?.message_count ?? 0),
+    pinned: Boolean(input?.pinned)
+  };
+}
+
+function logFromGrpc(input: any) {
+  return {
+    id: String(input?.id ?? ""),
+    timestamp: String(input?.timestamp ?? new Date().toISOString()),
+    user: String(input?.user ?? "unknown"),
+    service: String(input?.service ?? "unknown-service"),
+    action: String(input?.action ?? "unknown.action"),
+    status: String(input?.status ?? "success") as LogStatus,
+    correlationId: String(input?.correlation_id ?? ""),
+    metadata: parseMetadata(input?.metadata_json)
+  };
+}
+
+function conversationPageFromGrpc(input: any) {
+  return {
+    data: Array.isArray(input?.data) ? input.data.map(conversationFromGrpc) : [],
+    page: Number(input?.page ?? 1),
+    pageSize: Number(input?.page_size ?? 20),
+    total: Number(input?.total ?? 0),
+    totalPages: Number(input?.total_pages ?? 1)
+  };
+}
+
+function messageListFromGrpc(input: any) {
+  return { data: Array.isArray(input?.data) ? input.data.map(messageFromGrpc) : [] };
+}
+
+function logPageFromGrpc(input: any) {
+  return {
+    data: Array.isArray(input?.data) ? input.data.map(logFromGrpc) : [],
+    page: Number(input?.page ?? 1),
+    pageSize: Number(input?.page_size ?? 20),
+    total: Number(input?.total ?? 0),
+    totalPages: Number(input?.total_pages ?? 1)
+  };
+}
+
+function usageFromGrpc(input: any) {
+  return {
+    activeUsers: Number(input?.active_users ?? 0),
+    conversations: Number(input?.conversations ?? 0),
+    messages: Number(input?.messages ?? 0),
+    errorRate: Number(input?.error_rate ?? 0),
+    averageLatencyMs: Number(input?.average_latency_ms ?? 0)
+  };
+}
+
+function chatRequest(req: Request) {
+  const body = req.body && typeof req.body === "object" ? req.body as Record<string, any> : {};
+  const provider = body.provider && typeof body.provider === "object" ? body.provider : undefined;
+  return {
+    workspace_id: workspaceId(req),
+    request_id: correlationId(req),
+    conversation_id: typeof body.conversationId === "string" ? body.conversationId : "",
+    model: typeof body.model === "string" ? body.model : typeof provider?.model === "string" ? provider.model : "",
+    messages: Array.isArray(body.messages) ? body.messages : [],
+    provider,
+    attachments: Array.isArray(body.attachments) ? body.attachments : []
+  };
+}
+
+function lastRequestMessage(req: Request) {
+  const body = req.body && typeof req.body === "object" ? req.body as Record<string, any> : {};
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const content = [...messages].reverse().find((message) => message?.role === "user")?.content ?? messages[messages.length - 1]?.content ?? "";
+  return typeof content === "string" ? content.replace(/\s+/g, " ").trim().slice(0, 600) : "";
+}
+
+function chatGatewayMetadata(req: Request, step: number, extra: Record<string, unknown> = {}) {
+  const body = req.body && typeof req.body === "object" ? req.body as Record<string, any> : {};
