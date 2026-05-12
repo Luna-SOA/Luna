@@ -1,0 +1,92 @@
+{
+  "info": {
+    "name": "SOA Clean Microservices Tests",
+    "description": "REST, GraphQL, and gRPC test guide for the clean Node.js microservices project. Set providerBaseUrl, providerApiKey, and model in the environment before running chat requests because the app has no demo answer fallback.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" },
+    { "key": "workspaceId", "value": "postman-workspace" },
+    { "key": "conversationId", "value": "" },
+    { "key": "providerBaseUrl", "value": "https://api.openai.com/v1" },
+    { "key": "providerApiKey", "value": "replace-with-your-api-key" },
+    { "key": "model", "value": "gpt-5" }
+  ],
+  "item": [
+    {
+      "name": "REST",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": { "method": "GET", "header": [], "url": "{{baseUrl}}/health" }
+        },
+        {
+          "name": "Fetch Provider Models",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "content-type", "value": "application/json" },
+              { "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"baseUrl\": \"{{providerBaseUrl}}\",\n  \"apiKey\": \"{{providerApiKey}}\"\n}"
+            },
+            "url": "{{baseUrl}}/v1/provider/models"
+          }
+        },
+        {
+          "name": "Send Chat Message With Real Provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.conversationId) pm.environment.set('conversationId', json.conversationId);",
+                  "pm.test('assistant message returned', () => pm.expect(json.message.content).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "content-type", "value": "application/json" },
+              { "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{model}}\",\n  \"provider\": {\n    \"base_url\": \"{{providerBaseUrl}}\",\n    \"api_key\": \"{{providerApiKey}}\",\n    \"model\": \"{{model}}\"\n  },\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Explain why this project uses gRPC and Kafka in simple terms.\" }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "Record UI Log Through Gateway And gRPC",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "content-type", "value": "application/json" },
+              { "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"service\": \"web-client\",\n  \"action\": \"postman.ui.test\",\n  \"status\": \"success\",\n  \"metadata\": {\n    \"source\": \"postman\",\n    \"path\": \"Gateway REST -> Activity gRPC -> Kafka live log\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/v1/logs"
+          }
+        },
+        {
+          "name": "List Conversations",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }],
+            "url": "{{baseUrl}}/v1/conversations?page=1&pageSize=10"
+          }
+        },
+        {
+          "name": "Get Conversation Messages",
+          "request": {
+            "method": "GET",
