@@ -333,3 +333,108 @@ function findConversation(id: string, workspaceIdValue: string) {
   return conversationFromRow(row);
 }
 
+function getMessages(conversationId: string) {
+  const rows = db.prepare("SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC").all(conversationId) as MessageRow[];
+  return rows.map(messageFromRow);
+}
+
+function updateConversation(input: { id: string; workspaceId: string; title?: string; pinned?: boolean }) {
+  const current = findConversation(input.id, input.workspaceId);
+  const title = input.title?.trim() ? input.title.trim().slice(0, 120) : current.title;
+  const pinned = typeof input.pinned === "boolean" ? input.pinned : current.pinned;
+  db.prepare("UPDATE conversations SET title = ?, pinned = ?, updated_at = ? WHERE id = ? AND workspace_id = ?")
+    .run(title, pinned ? 1 : 0, new Date().toISOString(), input.id, input.workspaceId);
+  return findConversation(input.id, input.workspaceId);
+}
+
+function deleteConversation(id: string, workspaceIdValue: string) {
+  findConversation(id, workspaceIdValue);
+  db.prepare("DELETE FROM messages WHERE conversation_id = ?").run(id);
+  db.prepare("DELETE FROM conversations WHERE id = ? AND workspace_id = ?").run(id, workspaceIdValue);
+  return { deleted: true, id };
+}
+
+function filterLogs(query: { workspaceId: string; service?: unknown; status?: unknown; date?: unknown; search?: unknown }) {
+  const clauses = ["user = ?"];
+  const params: unknown[] = [workspaceLabel(query.workspaceId)];
+  if (typeof query.service === "string" && query.service.trim()) {
+    clauses.push("service = ?");
+    params.push(query.service.trim());
+  }
+  if (typeof query.status === "string" && query.status.trim()) {
+    clauses.push("status = ?");
+    params.push(query.status.trim());
+  }
+  if (typeof query.date === "string" && query.date.trim()) {
+    clauses.push("timestamp LIKE ?");
+    params.push(`${query.date.trim()}%`);
+  }
+  if (typeof query.search === "string" && query.search.trim()) {
+    const search = `%${query.search.trim().toLowerCase()}%`;
+    clauses.push("(LOWER(service) LIKE ? OR LOWER(action) LIKE ? OR LOWER(status) LIKE ? OR LOWER(correlation_id) LIKE ? OR LOWER(metadata_json) LIKE ?)");
+    params.push(search, search, search, search, search);
+  }
+  const rows = db.prepare(`SELECT * FROM logs WHERE ${clauses.join(" AND ")} ORDER BY timestamp DESC LIMIT 5000`).all(...params) as LogRow[];
+  return rows.map(logFromRow);
+}
+
+function listLogs(input: { workspaceId: string; page?: unknown; pageSize?: unknown; service?: unknown; status?: unknown; date?: unknown; search?: unknown }) {
+  const { page, pageSize } = pageParams(input.page, input.pageSize);
+  const all = filterLogs(input);
+  const start = (page - 1) * pageSize;
+  return { data: all.slice(start, start + pageSize), page, pageSize, total: all.length, totalPages: Math.max(1, Math.ceil(all.length / pageSize)) };
+}
+
+function usage(workspaceIdValue: string) {
+  const conversations = (db.prepare("SELECT COUNT(*) AS total FROM conversations WHERE workspace_id = ?").get(workspaceIdValue) as { total?: number } | undefined)?.total ?? 0;
+  const messages = (db.prepare("SELECT COUNT(*) AS total FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE workspace_id = ?)").get(workspaceIdValue) as { total?: number } | undefined)?.total ?? 0;
+  const logs = filterLogs({ workspaceId: workspaceIdValue });
+  const errors = logs.filter((log) => log.status === "error").length;
+  const latencies = logs.map((log) => log.metadata?.latencyMs).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  return {
+    active_users: conversations > 0 || logs.length > 0 ? 1 : 0,
+    conversations,
+    messages,
+    error_rate: Number((errors / Math.max(logs.length, 1)).toFixed(3)),
+    average_latency_ms: Math.round(latencies.reduce((sum, value) => sum + value, 0) / Math.max(latencies.length, 1))
+  };
+}
+
+function grpcError(code: grpc.status, message: string) {
+  return Object.assign(new Error(message), { code });
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function ensureKafkaTopics(kafka: Kafka) {
+  const admin = kafka.admin();
+  await admin.connect();
+  try {
+    await admin.createTopics({
+      waitForLeaders: true,
+      topics: topicNames.map((topic) => ({ topic, numPartitions: 1, replicationFactor: 1 }))
+    });
+  } finally {
+    await admin.disconnect().catch(() => undefined);
+  }
+}
+
+function makeEnvelope<T>(type: string, payload: T, correlationId: string): EventEnvelope<T> {
+  return {
+    id: randomUUID(),
+    type,
+    version: "1.0",
+    source: serviceName,
+    timestamp: new Date().toISOString(),
+    correlationId,
+    payload
+  };
+}
+
+async function publish(topic: string, type: string, payload: unknown, correlationId: string) {
+  if (!producer) return;
+  await producer.send({ topic, messages: [{ key: correlationId, value: JSON.stringify(makeEnvelope(type, payload, correlationId)) }] }).catch((error) => logger.warn({ error, topic }, "failed to publish kafka event"));
+}
+
