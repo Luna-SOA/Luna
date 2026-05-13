@@ -438,3 +438,141 @@ async function publish(topic: string, type: string, payload: unknown, correlatio
   await producer.send({ topic, messages: [{ key: correlationId, value: JSON.stringify(makeEnvelope(type, payload, correlationId)) }] }).catch((error) => logger.warn({ error, topic }, "failed to publish kafka event"));
 }
 
+async function startKafkaProducer() {
+  if (brokers.length === 0 || brokers.includes("disabled")) return;
+  const kafka = new Kafka({ clientId: `${serviceName}-producer`, brokers, logLevel: logLevel.ERROR });
+  await ensureKafkaTopics(kafka);
+  producer = kafka.producer({ allowAutoTopicCreation: true });
+  await producer.connect();
+  logger.info({ brokers }, "kafka producer connected");
+}
+
+async function startConsumer<T>(topic: string, groupId: string, handler: (event: EventEnvelope<T>) => void) {
+  if (brokers.length === 0 || brokers.includes("disabled")) return;
+
+  void (async () => {
+    for (let attempt = 1; ; attempt += 1) {
+      const kafka = new Kafka({ clientId: `${serviceName}-${groupId}`, brokers, logLevel: logLevel.ERROR });
+      const consumer = kafka.consumer({ groupId, allowAutoTopicCreation: true });
+      try {
+        await ensureKafkaTopics(kafka);
+        await consumer.connect();
+        await consumer.subscribe({ topic, fromBeginning: true });
+        await consumer.run({
+          eachMessage: async ({ message }) => {
+            if (!message.value) return;
+            const event = JSON.parse(message.value.toString()) as EventEnvelope<T>;
+            handler(event);
+          }
+        });
+        logger.info({ topic, groupId }, "kafka consumer connected");
+        return;
+      } catch (error) {
+        await consumer.disconnect().catch(() => undefined);
+        logger.warn({ error, topic, groupId, attempt }, "kafka consumer unavailable; retrying");
+        await sleep(Math.min(10_000, 1_000 + attempt * 1_000));
+      }
+    }
+  })();
+}
+
+async function startKafkaConsumers() {
+  await startConsumer<ChatEventPayload>(topics.userMessage, "activity-user-messages", (event) => {
+    saveMessageEvent(event.payload);
+    addActivityLog(event, event.payload.workspaceId, "activity_user_message_05_kafka_consumed", { step: 5, conversationId: event.payload.conversationId, model: event.payload.model, source: event.source, promptPreview: event.payload.message.content.replace(/\s+/g, " ").trim().slice(0, 600) });
+  });
+  await startConsumer<ChatEventPayload>(topics.assistantMessage, "activity-assistant-messages", (event) => {
+    saveMessageEvent(event.payload);
+    addActivityLog(event, event.payload.workspaceId, "activity_reply_06_kafka_consumed", { step: 6, conversationId: event.payload.conversationId, model: event.payload.model, source: event.source, replyPreview: event.payload.message.content.replace(/\s+/g, " ").trim().slice(0, 1_200) });
+  });
+  await startConsumer<LogPayload>(topics.logs, "activity-logs", (event) => addLog(event.payload));
+}
+
+async function main() {
+  await initDb();
+  await startKafkaProducer().catch((error) => logger.warn({ error }, "kafka producer unavailable"));
+  await startKafkaConsumers().catch((error) => logger.warn({ error }, "kafka consumers unavailable"));
+
+  const proto = loadGrpcPackage();
+  const server = new grpc.Server();
+
+  server.addService(proto.ActivityService.service, {
+    ListConversations: (call: grpc.ServerUnaryCall<any, unknown>, callback: grpc.sendUnaryData<unknown>) => {
+      try {
+        const result = listConversations({ workspaceId: workspaceId(call.request.workspace_id), page: call.request.page, pageSize: call.request.page_size, search: call.request.search });
+        callback(null, { data: result.data.map(grpcConversation), page: result.page, page_size: result.pageSize, total: result.total, total_pages: result.totalPages });
+      } catch (error) {
+        callback(error as grpc.ServiceError);
+      }
+    },
+
+    GetMessages: (call: grpc.ServerUnaryCall<any, unknown>, callback: grpc.sendUnaryData<unknown>) => {
+      try {
+        const conversation = findConversation(call.request.id, workspaceId(call.request.workspace_id));
+        callback(null, { data: getMessages(conversation.id).map(grpcMessage) });
+      } catch (error) {
+        callback(error as grpc.ServiceError);
+      }
+    },
+
+    UpdateConversation: (call: grpc.ServerUnaryCall<any, unknown>, callback: grpc.sendUnaryData<unknown>) => {
+      try {
+        const conversation = updateConversation({ id: call.request.id, workspaceId: workspaceId(call.request.workspace_id), title: call.request.title, pinned: call.request.has_pinned ? Boolean(call.request.pinned) : undefined });
+        callback(null, { conversation: grpcConversation(conversation) });
+      } catch (error) {
+        callback(error as grpc.ServiceError);
+      }
+    },
+
+    DeleteConversation: (call: grpc.ServerUnaryCall<any, unknown>, callback: grpc.sendUnaryData<unknown>) => {
+      try {
+        callback(null, deleteConversation(call.request.id, workspaceId(call.request.workspace_id)));
+      } catch (error) {
+        callback(error as grpc.ServiceError);
+      }
+    },
+
+    ListLogs: (call: grpc.ServerUnaryCall<any, unknown>, callback: grpc.sendUnaryData<unknown>) => {
+      try {
+        const result = listLogs({ workspaceId: workspaceId(call.request.workspace_id), page: call.request.page, pageSize: call.request.page_size, service: call.request.service, status: call.request.status, date: call.request.date, search: call.request.search });
+        callback(null, { data: result.data.map(grpcLog), page: result.page, page_size: result.pageSize, total: result.total, total_pages: result.totalPages });
+      } catch (error) {
+        callback(error as grpc.ServiceError);
+      }
+    },
+
+    RecordLog: (call: grpc.ServerUnaryCall<any, unknown>, callback: grpc.sendUnaryData<unknown>) => {
+      try {
+        const log = logFromGrpc(call.request);
+        addLog(log);
+        callback(null, { log: grpcLog(log) });
+      } catch (error) {
+        callback(error as grpc.ServiceError);
+      }
+    },
+
+    GetUsage: (call: grpc.ServerUnaryCall<any, unknown>, callback: grpc.sendUnaryData<unknown>) => {
+      try {
+        callback(null, usage(workspaceId(call.request.workspace_id)));
+      } catch (error) {
+        callback(error as grpc.ServiceError);
+      }
+    }
+  });
+
+  server.bindAsync(`0.0.0.0:${grpcPort}`, grpc.ServerCredentials.createInsecure(), (error, boundPort) => {
+    if (error) throw error;
+    server.start();
+    logger.info({ port: boundPort }, "activity gRPC server listening");
+  });
+
+  createServer((_req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ service: serviceName, status: "ok", grpcPort, dbPath }));
+  }).listen(healthPort, () => logger.info({ port: healthPort }, "activity health endpoint listening"));
+}
+
+main().catch((error) => {
+  logger.fatal({ error }, "activity service failed to start");
+  process.exit(1);
+});
