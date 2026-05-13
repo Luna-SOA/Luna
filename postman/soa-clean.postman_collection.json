@@ -90,3 +90,95 @@
           "name": "Get Conversation Messages",
           "request": {
             "method": "GET",
+            "header": [{ "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }],
+            "url": "{{baseUrl}}/v1/conversations/{{conversationId}}/messages"
+          }
+        },
+        {
+          "name": "List Logs",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }],
+            "url": "{{baseUrl}}/v1/logs?page=1&pageSize=20"
+          }
+        },
+        {
+          "name": "Usage Analytics",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }],
+            "url": "{{baseUrl}}/v1/analytics/usage"
+          }
+        }
+      ]
+    },
+    {
+      "name": "GraphQL",
+      "item": [
+        {
+          "name": "Dashboard Query",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "content-type", "value": "application/json" },
+              { "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"query Dashboard { conversations(page: 1, pageSize: 5) { total data { id title model messageCount updatedAt } } logs(page: 1, pageSize: 10) { total data { service action status timestamp correlationId } } usage { conversations messages errorRate averageLatencyMs } }\"\n}"
+            },
+            "url": "{{baseUrl}}/graphql"
+          }
+        }
+      ]
+    },
+    {
+      "name": "gRPC Requests To Create In Postman",
+      "description": "Use Postman's gRPC tab, import backend/proto/platform.proto, then create these requests. The HTTP request objects below only store example JSON bodies for easy copying.",
+      "item": [
+        {
+          "name": "ModelService.ListModels example body",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "content-type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": {\n    \"base_url\": \"{{providerBaseUrl}}\",\n    \"api_key\": \"{{providerApiKey}}\",\n    \"model\": \"{{model}}\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/health"
+          }
+        },
+        {
+          "name": "ChatService.SendMessage example body",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "content-type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"workspace_id\": \"postman-workspace\",\n  \"request_id\": \"postman-grpc-1\",\n  \"conversation_id\": \"postman-conversation-1\",\n  \"model\": \"{{model}}\",\n  \"provider\": {\n    \"base_url\": \"{{providerBaseUrl}}\",\n    \"api_key\": \"{{providerApiKey}}\",\n    \"model\": \"{{model}}\"\n  },\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Test gRPC chat with the real provider\" }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/health"
+          }
+        },
+        {
+          "name": "ActivityService.ListLogs example body",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "content-type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"workspace_id\": \"postman-workspace\",\n  \"page\": 1,\n  \"page_size\": 10\n}" },
+            "url": "{{baseUrl}}/health"
+          }
+        },
+        {
+          "name": "ActivityService.RecordLog example body",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "content-type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"id\": \"postman-log-1\",\n  \"timestamp\": \"2026-05-14T00:00:00.000Z\",\n  \"user\": \"workspace:postman-workspace\",\n  \"service\": \"web-client\",\n  \"action\": \"postman.grpc.record-log\",\n  \"status\": \"success\",\n  \"correlation_id\": \"postman-grpc-1\",\n  \"metadata_json\": \"{\\\"source\\\":\\\"postman\\\"}\"\n}" },
+            "url": "{{baseUrl}}/health"
+          }
+        }
+      ]
+    }
+  ]
+}
