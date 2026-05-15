@@ -29,6 +29,7 @@ const emptyLogs: Paginated<LogEntry> = { data: [], page: 1, pageSize, total: 0, 
 type LogStatus = LogEntry["status"];
 type StatusFilter = "" | LogStatus;
 type Filters = { service: string; status: StatusFilter; date: string; search: string };
+type ActionDetail = { label: string; protocol: string; explanation: string };
 type ChatFlow = {
   type: "chat-flow";
   id: string;
@@ -61,16 +62,87 @@ const chatFlowActions = new Set([
   "chat_error_99_failed"
 ]);
 
-const chatStepLabels: Record<string, string> = {
-  chat_request_01_gateway_received: "Gateway received the message",
-  chat_message_02_user_saved: "Chat Service saved the user prompt",
-  model_generate_03_provider_completed: "Model Service got the provider reply",
-  model_generate_03_provider_failed: "Model Service provider call failed",
-  chat_reply_04_assistant_saved: "Chat Service saved the assistant reply",
-  activity_user_message_05_kafka_consumed: "Activity Service stored the user message",
-  activity_reply_06_kafka_consumed: "Activity Service stored the assistant reply",
-  chat_response_07_gateway_returned: "Gateway returned the response",
-  chat_error_99_failed: "Chat flow failed"
+const actionDetails: Record<string, ActionDetail> = {
+  chat_request_01_gateway_received: {
+    label: "Gateway received the message",
+    protocol: "HTTP POST",
+    explanation: "The browser sent POST /v1/chat/completions to the API Gateway."
+  },
+  chat_message_02_user_saved: {
+    label: "Chat Service saved the user prompt",
+    protocol: "gRPC + Kafka",
+    explanation: "The Gateway called ChatService.SendMessage over gRPC, then Chat Service published chat.message.sent.v1."
+  },
+  model_generate_03_provider_completed: {
+    label: "Model Service got the provider reply",
+    protocol: "gRPC + Provider HTTP",
+    explanation: "Chat Service called ModelService.Generate over gRPC, then Model Service called the selected AI provider."
+  },
+  model_generate_03_provider_failed: {
+    label: "Model Service provider call failed",
+    protocol: "gRPC + Provider HTTP",
+    explanation: "The provider request failed while Model Service was handling the gRPC Generate call."
+  },
+  chat_reply_04_assistant_saved: {
+    label: "Chat Service saved the assistant reply",
+    protocol: "Kafka",
+    explanation: "Chat Service published chat.reply.created.v1 so Activity Service can store the assistant response."
+  },
+  activity_user_message_05_kafka_consumed: {
+    label: "Activity Service stored the user message",
+    protocol: "Kafka -> SQLite",
+    explanation: "Activity Service consumed chat.message.sent.v1 and persisted the user message."
+  },
+  activity_reply_06_kafka_consumed: {
+    label: "Activity Service stored the assistant reply",
+    protocol: "Kafka -> SQLite",
+    explanation: "Activity Service consumed chat.reply.created.v1 and persisted the assistant message."
+  },
+  chat_response_07_gateway_returned: {
+    label: "Gateway returned the response",
+    protocol: "HTTP JSON",
+    explanation: "The API Gateway returned the assistant message to the browser as JSON."
+  },
+  chat_error_99_failed: {
+    label: "Chat flow failed",
+    protocol: "Error path",
+    explanation: "One service failed before the full chat flow completed."
+  },
+  "ui.provider.saved": {
+    label: "Provider settings saved",
+    protocol: "UI Event",
+    explanation: "The browser saved provider settings locally and recorded the action."
+  },
+  "ui.model.selected": {
+    label: "Model selected",
+    protocol: "UI Event",
+    explanation: "The browser saved the selected model locally and recorded the action."
+  },
+  "conversation.renamed": {
+    label: "Conversation renamed",
+    protocol: "HTTP PATCH",
+    explanation: "The browser updated conversation metadata through the API Gateway."
+  },
+  "conversation.pinned": {
+    label: "Conversation pinned",
+    protocol: "HTTP PATCH",
+    explanation: "The browser updated the pinned state through the API Gateway."
+  },
+  "conversation.unpinned": {
+    label: "Conversation unpinned",
+    protocol: "HTTP PATCH",
+    explanation: "The browser updated the pinned state through the API Gateway."
+  },
+  "conversation.deleted": {
+    label: "Conversation deleted",
+    protocol: "HTTP DELETE",
+    explanation: "The browser deleted a conversation through the API Gateway."
+  },
+  "graphql.request": {
+    label: "GraphQL request",
+    protocol: "GraphQL",
+    explanation: "The API Gateway handled a GraphQL operation."
+  }
 };
 
 const services = [
@@ -229,8 +301,52 @@ function metadataPreview(entry: LogEntry) {
   return keys.length > 0 ? keys.slice(0, 3).join(", ") : "No metadata";
 }
 
+function inferActionDetail(entry: LogEntry): ActionDetail {
+  const restMatch = entry.action.match(/^(GET|POST|PATCH|DELETE|PUT)\s+(\S+)/);
+  if (restMatch) {
+    const [, method, path] = restMatch;
+    return {
+      label: entry.action,
+      protocol: path === "/graphql" ? "GraphQL" : `HTTP ${method}`,
+      explanation: path === "/graphql" ? "The API Gateway handled a GraphQL request." : `The API Gateway handled ${method} ${path} over REST HTTP.`
+    };
+  }
+
+  if (entry.action.startsWith("ui.")) {
+    return {
+      label: entry.action,
+      protocol: "UI Event",
+      explanation: "The browser recorded a local UI action through the logs endpoint."
+    };
+  }
+
+  return {
+    label: entry.action,
+    protocol: entry.service === "api-gateway" ? "HTTP/gRPC" : "Service event",
+    explanation: "This service emitted a structured audit log for the current request."
+  };
+}
+
+function actionDetail(entry: LogEntry) {
+  return actionDetails[entry.action] ?? inferActionDetail(entry);
+}
+
 function StatusBadge({ status }: { status: LogStatus }) {
   return <span className={`inline-flex rounded-full border px-2 py-1 text-xs font-medium ${statusClasses[status]}`}>{statusLabels[status]}</span>;
+}
+
+function protocolClass(protocol: string) {
+  const value = protocol.toLowerCase();
+  if (value.includes("kafka")) return "border-amber-400/25 bg-amber-400/10 text-amber-200";
+  if (value.includes("grpc")) return "border-cyan-400/25 bg-cyan-400/10 text-cyan-200";
+  if (value.includes("graphql")) return "border-fuchsia-400/25 bg-fuchsia-400/10 text-fuchsia-200";
+  if (value.includes("http")) return "border-sky-400/25 bg-sky-400/10 text-sky-200";
+  if (value.includes("sqlite")) return "border-emerald-400/25 bg-emerald-400/10 text-emerald-200";
+  return "border-border/40 bg-muted/35 text-muted-foreground";
+}
+
+function ProtocolBadge({ protocol }: { protocol: string }) {
+  return <span className={`inline-flex rounded-full border px-2 py-1 text-xs font-medium ${protocolClass(protocol)}`}>{protocol}</span>;
 }
 
 function ServiceBadge({ service }: { service: string }) {
@@ -263,6 +379,7 @@ function ChartCard({ title, detail, empty, children }: { title: string; detail: 
 
 function DetailModal({ entry, onClose }: { entry: LogEntry | null; onClose: () => void }) {
   if (!entry) return null;
+  const detail = actionDetail(entry);
 
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm" onMouseDown={onClose}>
@@ -274,6 +391,7 @@ function DetailModal({ entry, onClose }: { entry: LogEntry | null; onClose: () =
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <StatusBadge status={entry.status} />
               <ServiceBadge service={entry.service} />
+              <ProtocolBadge protocol={detail.protocol} />
             </div>
           </div>
           <button type="button" onClick={onClose} className="rounded-full border border-border/50 px-3 py-1.5 text-sm text-muted-foreground transition hover:bg-muted/40 hover:text-foreground">Close</button>
@@ -284,7 +402,9 @@ function DetailModal({ entry, onClose }: { entry: LogEntry | null; onClose: () =
             <Info label="Time" value={formatDate(entry.timestamp)} />
             <Info label="Workspace" value={entry.user} />
             <Info label="Service" value={entry.service} />
+            <Info label="Protocol" value={detail.protocol} />
             <Info label="Latency" value={metadataLatency(entry)} />
+            <Info label="What happened" value={detail.explanation} wide />
             <Info label="Correlation ID" value={entry.correlationId} wide />
           </div>
 
@@ -358,17 +478,24 @@ function ChatFlowCard({ flow, onOpen }: { flow: ChatFlow; onOpen: (entry: LogEnt
         {flow.conversationId ? <p className="mt-3 text-xs text-muted-foreground">Conversation: <span className="font-mono">{shortId(flow.conversationId)}</span></p> : null}
 
         <ol className="mt-4 space-y-2">
-          {flow.entries.map((entry) => (
-            <li key={entry.id}>
-              <button type="button" onClick={() => onOpen(entry)} className="grid w-full grid-cols-[28px_1fr] gap-3 rounded-2xl border border-border/25 bg-background/60 p-3 text-left transition hover:border-primary/30 hover:bg-muted/25">
-                <span className={`mt-0.5 flex h-7 w-7 items-center justify-center rounded-full border text-xs font-semibold ${entry.status === "error" ? "border-red-400/30 bg-red-400/10 text-red-300" : entry.status === "warning" ? "border-amber-400/30 bg-amber-400/10 text-amber-300" : "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"}`}>{entryStep(entry)}</span>
-                <span className="min-w-0">
-                  <span className="block text-sm font-medium text-foreground">{chatStepLabels[entry.action] ?? entry.action}</span>
-                  <span className="mt-0.5 block text-xs text-muted-foreground">{stepCaption(entry)}</span>
-                </span>
-              </button>
-            </li>
-          ))}
+          {flow.entries.map((entry) => {
+            const detail = actionDetail(entry);
+            return (
+              <li key={entry.id}>
+                <button type="button" onClick={() => onOpen(entry)} className="grid w-full grid-cols-[28px_1fr] gap-3 rounded-2xl border border-border/25 bg-background/60 p-3 text-left transition hover:border-primary/30 hover:bg-muted/25">
+                  <span className={`mt-0.5 flex h-7 w-7 items-center justify-center rounded-full border text-xs font-semibold ${entry.status === "error" ? "border-red-400/30 bg-red-400/10 text-red-300" : entry.status === "warning" ? "border-amber-400/30 bg-amber-400/10 text-amber-300" : "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"}`}>{entryStep(entry)}</span>
+                  <span className="min-w-0">
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium text-foreground">{detail.label}</span>
+                      <ProtocolBadge protocol={detail.protocol} />
+                    </span>
+                    <span className="mt-1 block text-xs leading-5 text-muted-foreground">{detail.explanation}</span>
+                    <span className="mt-0.5 block text-xs text-muted-foreground/80">{stepCaption(entry)}</span>
+                  </span>
+                </button>
+              </li>
+            );
+          })}
         </ol>
       </div>
     </article>
@@ -376,6 +503,7 @@ function ChatFlowCard({ flow, onOpen }: { flow: ChatFlow; onOpen: (entry: LogEnt
 }
 
 function LogRow({ entry, onOpen }: { entry: LogEntry; onOpen: () => void }) {
+  const detail = actionDetail(entry);
   return (
     <button type="button" onClick={onOpen} className="grid w-full gap-3 border-b border-border/25 px-4 py-4 text-left transition last:border-b-0 hover:bg-muted/25 lg:grid-cols-[170px_1fr_110px] lg:items-center">
       <div>
@@ -386,9 +514,11 @@ function LogRow({ entry, onOpen }: { entry: LogEntry; onOpen: () => void }) {
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={entry.status} />
           <ServiceBadge service={entry.service} />
+          <ProtocolBadge protocol={detail.protocol} />
         </div>
-        <p className="mt-2 truncate text-sm font-semibold text-foreground">{entry.action}</p>
-        <p className="mt-1 truncate text-xs text-muted-foreground">{metadataPreview(entry)}</p>
+        <p className="mt-2 truncate text-sm font-semibold text-foreground">{detail.label}</p>
+        <p className="mt-1 truncate text-xs text-muted-foreground">{detail.explanation}</p>
+        <p className="mt-1 truncate text-xs text-muted-foreground/80">{metadataPreview(entry)}</p>
       </div>
       <p className="text-xs text-muted-foreground lg:text-right">{metadataLatency(entry)}</p>
     </button>

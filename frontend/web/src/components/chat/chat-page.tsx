@@ -77,6 +77,16 @@ function openSettings(tab: "models") {
   window.dispatchEvent(new CustomEvent("luna:open-settings", { detail: { tab } }));
 }
 
+function conversationTitle(content: string) {
+  const title = content.replace(/\s+/g, " ").trim();
+  return title.length > 64 ? `${title.slice(0, 61)}...` : title || "Untitled conversation";
+}
+
+function announceConversationChanged(conversation?: { id: string; title: string; model: string; createdAt?: string; updatedAt?: string; messageCount?: number }) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("luna:conversations-changed", { detail: conversation ? { conversation } : undefined }));
+}
+
 function Icon({ children, className = "h-4 w-4", fill = "none" }: { children: ReactNode; className?: string; fill?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill={fill} stroke={fill === "none" ? "currentColor" : "none"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1586,6 +1596,17 @@ export function ChatPage() {
     }
 
     showConversationUrl(conversationId, existingConversationId ? "replace" : "push");
+    if (!existingConversationId) {
+      const now = new Date().toISOString();
+      announceConversationChanged({
+        id: conversationId,
+        title: conversationTitle(value),
+        model: selectedModel ?? provider.model,
+        createdAt: now,
+        updatedAt: now,
+        messageCount: 1
+      });
+    }
 
     if (appendUser) {
       setMessages((current) => [...current, userMessage]);
@@ -1626,7 +1647,13 @@ export function ChatPage() {
       localConversationIdRef.current = result.conversationId;
       showConversationUrl(result.conversationId, "replace");
       setMessages((current) => current.map((message) => message.id === placeholderId ? result.message : message));
-      window.dispatchEvent(new Event("luna:conversations-changed"));
+      announceConversationChanged({
+        id: result.conversationId,
+        title: conversationTitle(value),
+        model: selectedModel ?? provider.model,
+        updatedAt: new Date().toISOString(),
+        messageCount: 2
+      });
     } catch (error) {
       if (requestController.signal.aborted || requestControllerRef.current !== requestController) return;
       const message = error instanceof Error ? error.message : "Network error";

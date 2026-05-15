@@ -51,6 +51,25 @@ const settingsItems = [
 
 type SettingsTab = (typeof settingsItems)[number]["id"];
 type OpenSettingsDetail = { tab?: SettingsTab };
+type ConversationsChangedDetail = { conversation?: Partial<Conversation> & { id: string } };
+
+function mergeConversation(current: Conversation[], incoming: Partial<Conversation> & { id: string }, workspaceId: string) {
+  const now = new Date().toISOString();
+  const conversation: Conversation = {
+    workspaceId,
+    title: "Untitled conversation",
+    model: "unknown-model",
+    createdAt: now,
+    updatedAt: now,
+    messageCount: 1,
+    pinned: false,
+    ...incoming
+  };
+  const existing = current.find((chat) => chat.id === conversation.id);
+  const merged = existing ? { ...existing, ...conversation } : conversation;
+  return [merged, ...current.filter((chat) => chat.id !== conversation.id)]
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
 
 function Icon({ children, className = "h-4 w-4" }: { children: ReactNode; className?: string }) {
   return (
@@ -178,13 +197,15 @@ function Sidebar({ open, onClose, onSettings, workspaceId }: { open: boolean; on
   }, []);
 
   useEffect(() => {
-    function onConversationsChanged() {
+    function onConversationsChanged(event: Event) {
+      const conversation = (event as CustomEvent<ConversationsChangedDetail>).detail?.conversation;
+      if (conversation) setChats((current) => mergeConversation(current, conversation, workspaceId));
       refreshChats({ retry: true });
     }
 
     window.addEventListener("luna:conversations-changed", onConversationsChanged);
     return () => window.removeEventListener("luna:conversations-changed", onConversationsChanged);
-  }, [refreshChats]);
+  }, [refreshChats, workspaceId]);
 
   useEffect(() => {
     return () => {

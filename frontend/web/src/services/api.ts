@@ -206,7 +206,7 @@ export async function streamLogs(params: {
 
   if (typeof window !== "undefined" && "EventSource" in window) {
     query.set("workspaceId", getStoredWorkspaceId());
-    const url = new URL(`${getApiBaseUrl()}/v1/logs/stream`);
+    const url = new URL(`${getApiBaseUrl()}/v1/logs/stream`, window.location.origin);
     url.search = query.toString();
 
     await new Promise<void>((resolve) => {

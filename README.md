@@ -1,138 +1,153 @@
 <p align="center">
-  <img src="frontend/web/src/assets/logo.png" alt="Luna logo" width="250" />
+  <img src="frontend/web/src/assets/logo.png" alt="Luna logo" width="340" />
 </p>
 
-Luna is a Node.js microservices platform for a real-time AI chat experience. It supports any OpenAI-compatible provider, keeps conversation history, and streams structured activity logs into a live UI.
+<h1 align="center">Luna</h1>
 
-## What Luna Does
+<p align="center">
+  A real-time AI chat platform built with Next.js, Node.js microservices, gRPC, Kafka, GraphQL, REST, and SQLite.
+</p>
 
-- Chat UI that only talks to a single API Gateway
-- Provider-agnostic AI responses (OpenAI-compatible APIs)
-- Kafka-backed events for chat history and logs
-- Live logs page with grouped flows and metrics
-- Local-first provider secrets (stored in browser only)
+## Overview
 
-## System Overview
+Luna is an AI chat application designed as a service-oriented architecture. The browser talks to one public web service, while backend responsibilities are split into focused services for chat orchestration, model/provider access, conversation history, and audit logging.
 
-The web client talks only to the API Gateway. The gateway fans out to gRPC services, while Kafka carries events and logs to the Activity Service.
+The app supports OpenAI-compatible providers. Provider URLs and API keys stay in the browser, while conversations and system activity are persisted by backend services.
+
+## Features
+
+| Feature | Description |
+| --- | --- |
+| AI chat | Sends full chat turns to an OpenAI-compatible provider through the Model Service |
+| Conversation history | Stores conversations and messages in Activity Service SQLite |
+| Live activity logs | Streams Kafka-backed audit events to the logs page with SSE |
+| Flow grouping | Groups logs by correlation ID so one chat message becomes one readable service flow |
+| Provider settings | Stores provider URL, key, and selected model locally in the browser |
+| REST and GraphQL | Exposes public REST endpoints plus a GraphQL endpoint from the API Gateway |
+| Railway deployment | Runs within a 5-service Railway plan by combining web and gateway |
+
+## Architecture
+
+The web client never talks directly to the internal services. It calls `/api/*` on the web service, which proxies to the API Gateway running in the same container on Railway. The gateway then calls internal services over gRPC and publishes audit logs to Kafka.
 
 ```mermaid
 flowchart TB
-  User[User] --> Web[Web Client]
-  Web --> Gateway[API Gateway]
-  Gateway --> Chat[Chat Service]
-  Gateway --> Model[Model Service]
-  Gateway --> Activity[Activity Service]
-  Chat --> Model
-  Chat --> Kafka[(Kafka)]
-  Model --> Kafka
-  Kafka --> Activity
+  User[User] --> Browser[Next.js Web UI]
+  Browser -->|HTTP /api| Web[Railway web service]
+  Web -->|local HTTP 8081| Gateway[API Gateway]
+  Gateway -->|gRPC| Chat[Chat Service]
+  Gateway -->|gRPC| Model[Model Service]
+  Gateway -->|gRPC| Activity[Activity Service]
+  Chat -->|gRPC Generate| Model
+  Gateway -->|Kafka logs| Kafka[(Kafka)]
+  Chat -->|Kafka chat events| Kafka
+  Model -->|Kafka logs| Kafka
+  Kafka -->|consume events| Activity
+  Activity --> ActivityDb[(activity.sqlite)]
+  Chat --> ChatDb[(chat.sqlite)]
+  Model --> ModelDb[(model.sqlite)]
 ```
 
-| Part | What it does |
-| --- | --- |
-| Client | Web UI and logs charts, calls the gateway |
-| API Gateway | Public REST and GraphQL, gRPC clients to services |
-| Chat Service | Handles chat requests, asks Model Service for replies |
-| Model Service | Calls the configured provider, lists models |
-| Activity Service | Stores conversations, messages, and logs |
-| Kafka | Async events between services |
-| SQLite | One DB per stateful service |
+## Services
 
-## Core Flows
+| Service | Path | Protocols | Owns data | Responsibility |
+| --- | --- | --- | --- | --- |
+| Web | `frontend/web` | HTTP, SSE | Browser storage | Chat UI, settings, logs charts, `/api` proxy route |
+| API Gateway | `backend/gateway` | REST, GraphQL, gRPC clients, Kafka producer/consumer | None | Public API, routing, live log stream |
+| Chat Service | `backend/services/chat-service` | gRPC server/client, Kafka producer | `chat.sqlite` | Coordinates user prompts and assistant replies |
+| Model Service | `backend/services/model-service` | gRPC server, HTTP provider calls, Kafka producer | `model.sqlite` | Lists models and calls OpenAI-compatible providers |
+| Activity Service | `backend/services/activity-service` | gRPC server, Kafka consumers/producer | `activity.sqlite` | Stores conversations, messages, logs, and analytics |
+| Kafka | Railway image service | Kafka | Broker state | Event broker for messages and logs |
 
-### Chat Message Flow
+## Chat Flow
 
-Chat Service does not write history directly. It calls Model Service over gRPC, then publishes Kafka events that Activity Service consumes.
+One chat request crosses HTTP, gRPC, Kafka, and SQLite. Every important step emits `system.log.created.v1` with the same `correlationId`, which is why the logs page can show a single grouped flow.
 
 ```mermaid
 sequenceDiagram
-  participant W as Web Client
+  participant W as Web UI
   participant G as API Gateway
   participant C as Chat Service
   participant M as Model Service
   participant K as Kafka
   participant A as Activity Service
 
-  W->>G: POST /v1/chat/completions
+  W->>G: HTTP POST /v1/chat/completions
   G->>K: system.log.created.v1 step 1
-  G->>C: gRPC SendMessage(ChatRequest)
-  C->>C: Save request in chat.sqlite
-  C->>K: chat.message.sent.v1
-  C->>K: system.log.created.v1 step 2
-  C->>M: gRPC Generate(GenerateRequest)
-  M->>M: Save request in model.sqlite
+  G->>C: gRPC SendMessage
+  C->>C: Save request tracking in chat.sqlite
+  C->>K: chat.message.sent.v1 + log step 2
+  C->>M: gRPC Generate
+  M->>M: Save provider request in model.sqlite
   M->>K: system.log.created.v1 step 3
-  M-->>C: GenerateResponse
-  C->>K: chat.reply.created.v1
-  C->>K: system.log.created.v1 step 4
+  M-->>C: Assistant text
+  C->>K: chat.reply.created.v1 + log step 4
   K-->>A: Consume chat.message.sent.v1
   K-->>A: Consume chat.reply.created.v1
-  K-->>A: Consume system.log.created.v1
-  A->>A: Save messages and logs in activity.sqlite
+  A->>A: Store conversation and messages in activity.sqlite
   A->>K: system.log.created.v1 steps 5 and 6
   C-->>G: ChatResponse
   G->>K: system.log.created.v1 step 7
-  G-->>W: Assistant message
+  G-->>W: HTTP JSON assistant message
 ```
 
-### Live Logs Flow
+## Activity Logs
 
-Logs come from Kafka events plus UI actions. Events with the same correlation ID are grouped into one flow card in the UI.
+The logs page combines stored history and live events. Stored logs come from Activity Service through gRPC. Live logs come from Kafka through the API Gateway SSE endpoint.
 
 ```mermaid
 flowchart LR
-  Gateway[API Gateway] -->|"system.log.created.v1"| Kafka[(Kafka)]
-  Chat[Chat Service] -->|"system.log.created.v1"| Kafka
-  Model[Model Service] -->|"system.log.created.v1"| Kafka
-  Client[Web Client] -->|"POST /v1/logs"| Gateway
-  Kafka -->|"save logs"| Activity[Activity Service]
-  Activity -->|"system.log.created.v1"| Kafka
-  Kafka -->|"live logs"| Gateway
-  Gateway -->|"SSE /v1/logs/stream"| LogsPage[Logs Page Charts]
-  Activity -->|"SQLite"| LogsDb[(activity.sqlite logs table)]
+  Web[Web UI] -->|POST /v1/logs UI actions| Gateway[API Gateway]
+  Gateway -->|system.log.created.v1| Kafka[(Kafka)]
+  Chat[Chat Service] -->|system.log.created.v1| Kafka
+  Model[Model Service] -->|system.log.created.v1| Kafka
+  Activity[Activity Service] -->|system.log.created.v1| Kafka
+  Kafka -->|persist| Activity
+  Activity -->|gRPC ListLogs| Gateway
+  Kafka -->|live stream consumer| Gateway
+  Gateway -->|SSE /v1/logs/stream| Logs[Logs Page]
 ```
+
+| Log step | Protocol | Meaning |
+| --- | --- | --- |
+| Gateway received the message | HTTP POST | Browser submitted a chat request |
+| Chat Service saved the user prompt | gRPC + Kafka | Gateway called Chat Service and the user message event was published |
+| Model Service got the provider reply | gRPC + Provider HTTP | Chat Service called Model Service, then Model Service called the provider |
+| Chat Service saved the assistant reply | Kafka | Assistant reply event was published |
+| Activity Service stored messages | Kafka -> SQLite | Activity Service consumed events and persisted history |
+| Gateway returned the response | HTTP JSON | Browser received the assistant response |
 
 ## Data Ownership
 
-Each stateful service owns its own SQLite file. The Gateway has no DB.
+Each stateful service owns its own SQLite database. Services do not share database files.
 
-```mermaid
-flowchart TB
-  Chat[Chat Service] --> ChatDb[(chat.sqlite request tracking)]
-  Model[Model Service] --> ModelDb[(model.sqlite model request tracking)]
-  Activity[Activity Service] --> ActivityDb[(activity.sqlite conversations messages logs)]
-  Gateway[API Gateway] --> NoDb[No database]
-```
+| Data | Owner | Storage |
+| --- | --- | --- |
+| Chat request tracking | Chat Service | `chat.sqlite` |
+| Provider/model request tracking | Model Service | `model.sqlite` |
+| Conversations | Activity Service | `activity.sqlite` |
+| Messages | Activity Service | `activity.sqlite` |
+| Audit logs | Activity Service | `activity.sqlite` |
+| Provider API keys | Browser only | localStorage |
 
-## Components
+## API Surface
 
-| Component | Role | Protocols | Database |
-| --- | --- | --- | --- |
-| `frontend/web` | UI and logs charts | HTTP | Browser only |
-| `backend/gateway` | Single entry point | REST, GraphQL, gRPC clients, Kafka | None |
-| `chat-service` | Chat coordinator | gRPC server/client, Kafka producer | `chat.sqlite` |
-| `model-service` | Provider bridge | gRPC server, Kafka producer | `model.sqlite` |
-| `activity-service` | History and logs | gRPC server, Kafka consumers | `activity.sqlite` |
-| `kafka` | Event broker | Kafka | Internal |
+Local gateway base URL: `http://localhost:8080`.
 
-## REST Endpoints
+Railway public API path: `https://web-production-3f2f4.up.railway.app/api`.
 
-Base URL: `http://localhost:8080`
-
-| Method | Endpoint | Description |
+| Method | Endpoint | Purpose |
 | --- | --- | --- |
 | `GET` | `/health` | Gateway health check |
-| `GET` | `/v1/models` | Returns empty unless a provider is supplied |
-| `POST` | `/v1/provider/models` | Fetch models from an OpenAI-compatible provider |
-| `POST` | `/v1/chat/completions` | Send a chat message |
+| `POST` | `/v1/provider/models` | Fetch provider models |
+| `POST` | `/v1/chat/completions` | Send chat request |
 | `GET` | `/v1/conversations` | List conversations |
-| `GET` | `/v1/conversations/:id/messages` | Messages of one conversation |
-| `PATCH` | `/v1/conversations/:id` | Rename or pin |
-| `DELETE` | `/v1/conversations/:id` | Delete |
-| `GET` | `/v1/logs` | Stored logs |
+| `GET` | `/v1/conversations/:id/messages` | List messages for one conversation |
+| `PATCH` | `/v1/conversations/:id` | Rename or pin a conversation |
+| `DELETE` | `/v1/conversations/:id` | Delete a conversation |
+| `GET` | `/v1/logs` | Fetch stored logs |
 | `GET` | `/v1/logs/stream` | Live SSE log stream |
-| `POST` | `/v1/logs` | Record a UI action |
+| `POST` | `/v1/logs` | Record UI action |
 | `GET` | `/v1/analytics/usage` | Usage summary |
 | `POST` | `/graphql` | GraphQL endpoint |
 
@@ -140,13 +155,13 @@ Base URL: `http://localhost:8080`
 
 | Topic | Producer | Consumer | Purpose |
 | --- | --- | --- | --- |
-| `chat.message.sent.v1` | Chat Service | Activity Service | Save user message |
-| `chat.reply.created.v1` | Chat Service | Activity Service | Save assistant reply |
-| `system.log.created.v1` | Gateway, Chat, Model, Activity | Activity, Gateway | Store and stream logs |
+| `chat.message.sent.v1` | Chat Service | Activity Service | Persist user messages |
+| `chat.reply.created.v1` | Chat Service | Activity Service | Persist assistant replies |
+| `system.log.created.v1` | Gateway, Chat, Model, Activity | Activity Service, API Gateway | Store and stream audit logs |
 
-## Install And Run
+## Local Development
 
-Requires Node.js 22+, npm, and Docker for Kafka.
+Requirements: Node.js 22+, npm, and Docker.
 
 ```bash
 npm install
@@ -154,7 +169,15 @@ npm run docker:kafka
 npm run dev
 ```
 
-App: `http://localhost:3000`. Gateway health: `http://localhost:8080/health`.
+Local URLs:
+
+| App | URL |
+| --- | --- |
+| Web UI | `http://localhost:3000` |
+| Gateway health | `http://localhost:8080/health` |
+| Chat gRPC | `localhost:5102` |
+| Model gRPC | `localhost:5103` |
+| Activity gRPC | `localhost:5104` |
 
 ## Docker
 
@@ -162,18 +185,86 @@ App: `http://localhost:3000`. Gateway health: `http://localhost:8080/health`.
 docker compose up --build
 ```
 
-Starts Kafka, the gateway, all three services, and the frontend.
+This starts Kafka, the gateway, the three backend services, and the frontend.
+
+## Railway Deployment
+
+The Railway deployment uses five services:
+
+| Railway service | Source | Important setting |
+| --- | --- | --- |
+| `kafka` | Docker image `apache/kafka:4.2.0` | Do not connect this service to the GitHub repo |
+| `model-service` | GitHub repo `Luna-SOA/Luna` | `SERVICE_NAME=model-service` |
+| `activity-service` | GitHub repo `Luna-SOA/Luna` | `SERVICE_NAME=activity-service` |
+| `chat-service` | GitHub repo `Luna-SOA/Luna` | `SERVICE_NAME=chat-service` |
+| `web` | GitHub repo `Luna-SOA/Luna` | `SERVICE_NAME=web-gateway` |
+
+The `web` service runs both Next.js and the API Gateway to stay within the 5-service Railway limit:
+
+| Variable | Value |
+| --- | --- |
+| `SERVICE_NAME` | `web-gateway` |
+| `HOSTNAME` | `0.0.0.0` |
+| `API_GATEWAY_PORT` | `8081` |
+| `API_PROXY_TARGET` | `http://127.0.0.1:8081` |
+| `NEXT_PUBLIC_API_BASE_URL` | `/api` |
+
+Kafka should remain an image-based service. If Kafka is connected to the repo, it will try to run `railway-start.sh` with `SERVICE_NAME=kafka` and fail.
+
+## Railway Power Switch
+
+Use this before and after demos to reduce Railway RAM usage and avoid paying for idle services.
+
+```powershell
+npm run railway:status
+npm run railway:pause
+npm run railway:resume
+```
+
+What it does:
+
+| Command | Effect |
+| --- | --- |
+| `npm run railway:status` | Shows current Railway service states |
+| `npm run railway:pause` | Stops `web`, app services, then Kafka |
+| `npm run railway:resume` | Starts Kafka first, then model, activity, chat, and web |
+
+The script requires Railway CLI login or `RAILWAY_TOKEN`:
+
+```powershell
+railway login
+```
+
+Do not pause during a live demo. When paused, the public website is unavailable until `npm run railway:resume` completes.
+
+## Verification
+
+Run these before pushing or deploying:
+
+```bash
+npm run typecheck
+npm run build:backend
+npm run build:frontend
+```
+
+Production smoke checks:
+
+```powershell
+Invoke-WebRequest https://web-production-3f2f4.up.railway.app
+Invoke-WebRequest https://web-production-3f2f4.up.railway.app/api/health
+Invoke-WebRequest https://web-production-3f2f4.up.railway.app/api/v1/conversations
+```
 
 ## Postman
 
-Import:
+Import these files for REST and GraphQL testing:
 
 | File | Purpose |
 | --- | --- |
 | `postman/soa-clean.postman_collection.json` | REST and GraphQL requests |
 | `postman/soa-clean.postman_environment.json` | Local variables |
 
-For gRPC, create a Postman gRPC request using `backend/proto/platform.proto`:
+For gRPC testing, create a Postman gRPC request using `backend/proto/platform.proto`.
 
 | Service | Method | Address |
 | --- | --- | --- |

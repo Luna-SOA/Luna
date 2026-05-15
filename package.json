@@ -21,7 +21,10 @@
     "typecheck": "npm run typecheck -w @soa/api-gateway && npm run typecheck -w @soa/chat-service && npm run typecheck -w @soa/model-service && npm run typecheck -w @soa/activity-service && npm run typecheck -w @luna/web",
     "docker:kafka": "docker compose up -d kafka",
     "docker:up": "docker compose up --build",
-    "docker:down": "docker compose down --remove-orphans"
+    "docker:down": "docker compose down --remove-orphans",
+    "railway:pause": "pwsh ./scripts/railway-power.ps1 pause",
+    "railway:resume": "pwsh ./scripts/railway-power.ps1 resume",
+    "railway:status": "pwsh ./scripts/railway-power.ps1 status"
   },
   "devDependencies": {
     "@types/node": "^22.10.7",
