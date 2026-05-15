@@ -1,10 +1,22 @@
-# AI Chatbot
+# Luna
 
-A Node.js microservices project for a chat app. Real AI replies come from any OpenAI-compatible provider you configure. Conversations and logs are stored, and the activity logs show up live in the UI.
+<p align="center">
+  <img src="frontend/web/src/assets/logo.png" alt="Luna logo" width="360" />
+</p>
+
+Luna is a Node.js microservices platform for a real-time AI chat experience. It supports any OpenAI-compatible provider, keeps conversation history, and streams structured activity logs into a live UI.
+
+## What Luna Does
+
+- Chat UI that only talks to a single API Gateway
+- Provider-agnostic AI responses (OpenAI-compatible APIs)
+- Kafka-backed events for chat history and logs
+- Live logs page with grouped flows and metrics
+- Local-first provider secrets (stored in browser only)
 
 ## System Overview
 
-The web client only talks to the API Gateway. The Gateway calls the backend services over gRPC. Kafka carries messages and logs to the Activity Service.
+The web client talks only to the API Gateway. The gateway fans out to gRPC services, while Kafka carries events and logs to the Activity Service.
 
 ```mermaid
 flowchart TB
@@ -21,59 +33,17 @@ flowchart TB
 
 | Part | What it does |
 | --- | --- |
-| Client | Web UI, sends HTTP requests to the Gateway |
-| API Gateway | Public REST and GraphQL, gRPC clients to the services |
+| Client | Web UI and logs charts, calls the gateway |
+| API Gateway | Public REST and GraphQL, gRPC clients to services |
 | Chat Service | Handles chat requests, asks Model Service for replies |
 | Model Service | Calls the configured provider, lists models |
 | Activity Service | Stores conversations, messages, and logs |
 | Kafka | Async events between services |
 | SQLite | One DB per stateful service |
 
-## Website Workflow
+## Core Flows
 
-The browser keeps a workspace id in localStorage and sends it as `x-luna-workspace-id` so each workspace is isolated.
-
-```mermaid
-sequenceDiagram
-  participant U as User
-  participant W as Web Client
-  participant G as API Gateway
-  participant A as Activity Service
-
-  U->>W: Open http://localhost:3000
-  W->>W: Read or create workspace id in localStorage
-  W->>G: GET /v1/conversations
-  G->>A: gRPC ListConversations
-  A-->>G: ConversationPage
-  G-->>W: Sidebar conversations
-  W->>G: GET /v1/logs/stream
-  G-->>W: Live SSE connection for logs page
-```
-
-## Provider And Models Workflow
-
-The provider URL and API key are saved in the browser only, not in the backend.
-
-```mermaid
-sequenceDiagram
-  participant U as User
-  participant W as Web Client
-  participant G as API Gateway
-  participant M as Model Service
-  participant P as Provider API
-
-  U->>W: Add provider URL and API key in settings
-  W->>W: Save provider in localStorage
-  W->>G: POST /v1/provider/models
-  G->>M: gRPC ListModels(provider)
-  M->>P: GET /models
-  P-->>M: Model list
-  M-->>G: ModelListResponse
-  G-->>W: { models: [...] }
-  W->>W: User selects a model
-```
-
-## Send Message Workflow
+### Chat Message Flow
 
 Chat Service does not write history directly. It calls Model Service over gRPC, then publishes Kafka events that Activity Service consumes.
 
@@ -108,7 +78,7 @@ sequenceDiagram
   G-->>W: Assistant message
 ```
 
-## Logs Page Workflow
+### Live Logs Flow
 
 Logs come from Kafka events plus UI actions. Events with the same correlation ID are grouped into one flow card in the UI.
 
@@ -121,28 +91,9 @@ flowchart LR
   Kafka -->|"save logs"| Activity[Activity Service]
   Activity -->|"system.log.created.v1"| Kafka
   Kafka -->|"live logs"| Gateway
-  Gateway -->|"SSE /v1/logs/stream with workspaceId"| LogsPage[Logs Page Charts]
+  Gateway -->|"SSE /v1/logs/stream"| LogsPage[Logs Page Charts]
   Activity -->|"SQLite"| LogsDb[(activity.sqlite logs table)]
 ```
-
-| Chart | Meaning |
-| --- | --- |
-| Status | Success, warning, and error events |
-| Services | Which service produced the most events |
-| Latency | Recent processing time from log metadata |
-
-The chat flow card uses these `system.log.created.v1` actions. All events share the same `correlationId`, so the UI can group them as one request.
-
-| Step | Action | Producer | Meaning |
-| --- | --- | --- | --- |
-| 1 | `chat_request_01_gateway_received` | API Gateway | Gateway accepted the HTTP chat request |
-| 2 | `chat_message_02_user_saved` | Chat Service | User prompt was saved and published to `chat.message.sent.v1` |
-| 3 | `model_generate_03_provider_completed` | Model Service | Provider returned assistant text |
-| 4 | `chat_reply_04_assistant_saved` | Chat Service | Assistant reply was published to `chat.reply.created.v1` |
-| 5 | `activity_user_message_05_kafka_consumed` | Activity Service | Activity consumed and stored the user message |
-| 6 | `activity_reply_06_kafka_consumed` | Activity Service | Activity consumed and stored the assistant reply |
-| 7 | `chat_response_07_gateway_returned` | API Gateway | Gateway returned the HTTP response to the web client |
-| 99 | `chat_error_99_failed` | Chat Service | Chat flow failed before completion |
 
 ## Data Ownership
 
@@ -154,56 +105,6 @@ flowchart TB
   Model[Model Service] --> ModelDb[(model.sqlite model request tracking)]
   Activity[Activity Service] --> ActivityDb[(activity.sqlite conversations messages logs)]
   Gateway[API Gateway] --> NoDb[No database]
-```
-
-## Architecture
-
-```mermaid
-flowchart LR
-  Client[Next.js Client] -->|"REST and GraphQL HTTP JSON"| Gateway[API Gateway]
-  Gateway -->|"gRPC HTTP/2 Protobuf"| Chat[Chat Service]
-  Gateway -->|"gRPC HTTP/2 Protobuf"| Model[Model Service]
-  Gateway -->|"gRPC HTTP/2 Protobuf"| Activity[Activity Service]
-  Chat -->|"gRPC HTTP/2 Protobuf"| Model
-  Chat -->|"Kafka events"| Kafka[(Kafka Broker)]
-  Model -->|"Kafka logs"| Kafka
-  Gateway -->|"Kafka logs"| Kafka
-  Kafka -->|"Consumes events"| Activity
-  Gateway -->|"Kafka live logs"| Client
-  Chat --> ChatDb[(chat.sqlite)]
-  Model --> ModelDb[(model.sqlite)]
-  Activity --> ActivityDb[(activity.sqlite)]
-```
-
-## Full Pipeline
-
-```mermaid
-sequenceDiagram
-  participant U as User
-  participant W as Web Client
-  participant G as API Gateway
-  participant C as Chat Service
-  participant M as Model Service
-  participant K as Kafka
-  participant A as Activity Service
-
-  U->>W: Sends a chat message
-  W->>G: POST /v1/chat/completions
-  G->>C: gRPC SendMessage
-  C->>M: gRPC Generate
-  M-->>C: Assistant text
-  C->>K: chat.message.sent.v1
-  C->>K: chat.reply.created.v1
-  C->>K: system.log.created.v1
-  G->>K: system.log.created.v1
-  M->>K: system.log.created.v1
-  K-->>A: Activity consumes events
-  A-->>A: Saves data in SQLite
-  A->>K: system.log.created.v1
-  K-->>G: Gateway receives live log events
-  G-->>W: SSE live logs for charts
-  C-->>G: Chat response
-  G-->>W: JSON response
 ```
 
 ## Components
