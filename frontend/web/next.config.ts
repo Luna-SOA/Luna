@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 import path from "node:path";
 
-const apiProxyTarget = process.env.API_PROXY_TARGET ?? "http://127.0.0.1:8080";
+const apiProxyTarget = process.env.API_PROXY_TARGET ?? "http://127.0.0.1:8081";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
