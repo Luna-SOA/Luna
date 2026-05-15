@@ -399,6 +399,15 @@ function totalPages(total: number) {
   return Math.max(1, Math.ceil(total / pageSize));
 }
 
+function mergeLogPages(snapshot: Paginated<LogEntry>, current: Paginated<LogEntry>, page: number) {
+  if (page !== 1 || current.data.length === 0) return snapshot;
+  const byId = new Map<string, LogEntry>();
+  for (const entry of [...snapshot.data, ...current.data]) byId.set(entry.id, entry);
+  const data = [...byId.values()].sort((a, b) => entryTime(b) - entryTime(a)).slice(0, pageSize);
+  const total = Math.max(snapshot.total, current.total, data.length);
+  return { ...snapshot, data, total, totalPages: totalPages(total) };
+}
+
 export function LogsPage() {
   const [draft, setDraft] = useState<Filters>(emptyFilters);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
@@ -415,9 +424,12 @@ export function LogsPage() {
   useEffect(() => {
     const controller = new AbortController();
     let cancelled = false;
-    setError("");
-    setRefreshing(true);
-    if (logs.data.length === 0) setLoading(true);
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setError("");
+      setRefreshing(true);
+      setLoading(true);
+    });
 
     getLogs({ service: filters.service, status: filters.status, date: filters.date, search: filters.search, page, pageSize, signal: controller.signal })
       .then((result) => {
@@ -445,7 +457,9 @@ export function LogsPage() {
     let stopped = false;
     let retryTimer: number | undefined;
     const controller = new AbortController();
-    setStreamError("");
+    queueMicrotask(() => {
+      if (!stopped) setStreamError("");
+    });
 
     function connect() {
       void streamLogs({
@@ -458,7 +472,7 @@ export function LogsPage() {
         signal: controller.signal,
         onSnapshot: (snapshot) => {
           if (stopped) return;
-          setLogs(snapshot);
+          setLogs((current) => mergeLogPages(snapshot, current, page));
           setLoading(false);
           setStreamError("");
         },

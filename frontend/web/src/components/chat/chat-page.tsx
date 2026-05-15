@@ -9,7 +9,7 @@ import { cn } from "@/components/ui/cn";
 import { ChatMatrix } from "@/components/ui/chat-matrix";
 import { ScrambleText as ScrambleTextComponent } from "@/components/ui/scramble-text";
 import { readAttachmentFile } from "@/services/attachment-reader";
-import { getConversationMessages, sendChatMessage, type ChatAttachmentPayload } from "@/services/api";
+import { getConversationMessages, sendChatMessage, type ChatAttachmentPayload, type ChatTurnPayload } from "@/services/api";
 import { getSelectedModel, loadModelSettings, MODEL_SETTINGS_CHANGED } from "@/services/model-settings";
 import type { ChatMessage } from "@/types";
 import logo from "@/assets/logo.png";
@@ -50,6 +50,28 @@ const moreSuggestions = [
 ] as const;
 
 const thinkingPhrases = ["hold up let me think real quick...", "Luna is thinking...", "working through this..."] as const;
+
+function conversationUrl(conversationId: string) {
+  return `/chat?conv=${encodeURIComponent(conversationId)}`;
+}
+
+function showConversationUrl(conversationId: string, mode: "push" | "replace" = "push") {
+  if (typeof window === "undefined") return;
+  if (window.location.pathname !== "/" && !window.location.pathname.startsWith("/chat")) return;
+  const nextUrl = conversationUrl(conversationId);
+  if (`${window.location.pathname}${window.location.search}` === nextUrl) return;
+  if (mode === "replace") window.history.replaceState(null, "", nextUrl);
+  else window.history.pushState(null, "", nextUrl);
+}
+
+function requestTurns(history: LocalChatMessage[], content: string): ChatTurnPayload[] {
+  const turns = history
+    .filter((message) => (message.role === "system" || message.role === "user" || message.role === "assistant") && message.content.trim())
+    .map((message) => ({ role: message.role, content: message.content.trim() }));
+  const last = turns[turns.length - 1];
+  if (!last || last.role !== "user" || last.content !== content) turns.push({ role: "user", content });
+  return turns.slice(-24);
+}
 
 function openSettings(tab: "models") {
   window.dispatchEvent(new CustomEvent("luna:open-settings", { detail: { tab } }));
@@ -151,17 +173,6 @@ function attachmentMethodLabel(method?: ChatAttachment["method"]) {
   return "Text";
 }
 
-function escapeActivityValue(value: string) {
-  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function attachmentActivityMarkup(input: string, output: string, status: string, done: boolean, failed = false) {
-  return [
-    `<tool id="read-attachments" name="Read attachments" status="${escapeActivityValue(status)}" arguments="${escapeActivityValue(input)}" done="${done ? "true" : "false"}"></tool>`,
-    `<output id="read-attachments" name="Read attachments" status="${escapeActivityValue(status)}" done="${done ? "true" : "false"}" failed="${failed ? "true" : "false"}">\n${escapeActivityValue(output)}\n</output>`
-  ].join("\n") + "\n\n";
-}
-
 function cleanUrlToken(value: string) {
   return value.replace(/[\])}>,.!?;:'"]+$/g, "");
 }
@@ -191,26 +202,6 @@ function urlHostLabel(value: string) {
 
 function wantsWebSearch(value: string) {
   return /^\s*search\b/i.test(value) || /\b(?:search\s+(?:the\s+)?(?:web|internet|online)|web\s+search|search\s+online|look\s+up\s+online)\b/i.test(value);
-}
-
-function wantsWeather(value: string) {
-  return /\b(?:weather|forecast|temperature|rain|snow|humidity|wind\s*speed)\b/i.test(value);
-}
-
-function hasExplicitWeatherLocation(value: string) {
-  return /\b(?:weather|forecast|temperature|rain|snow|humidity|wind)\s+(?:in|for|at|near)\s+[^?.!,;\n]+/i.test(value)
-    || /\b(?:in|for|at|near)\s+[^?.!,;\n]+?\s+(?:weather|forecast|temperature)\b/i.test(value);
-}
-
-function currentBrowserWeatherLocation(): Promise<{ latitude: number; longitude: number; label?: string } | undefined> {
-  if (typeof navigator === "undefined" || !navigator.geolocation) return Promise.resolve(undefined);
-  return new Promise((resolve) => {
-    navigator.geolocation.getCurrentPosition(
-      (position) => resolve({ latitude: position.coords.latitude, longitude: position.coords.longitude, label: "Current location" }),
-      () => resolve(undefined),
-      { enableHighAccuracy: false, timeout: 4500, maximumAge: 10 * 60 * 1000 }
-    );
-  });
 }
 
 function shouldAutoEnableWebSearch(value: string) {
@@ -1432,7 +1423,7 @@ export function ChatPage() {
     if (!conversationIdFromUrl) return;
     queueMicrotask(() => setHasMessages(true));
 
-    if (localConversationIdRef.current === conversationIdFromUrl && messagesRef.current.some((message) => message.conversationId === conversationIdFromUrl)) {
+    if (localConversationIdRef.current === conversationIdFromUrl) {
       queueMicrotask(() => setLoadingConversation(false));
       return;
     }
@@ -1445,6 +1436,7 @@ export function ChatPage() {
     getConversationMessages({ conversationId: conversationIdFromUrl, signal: controller.signal })
       .then((result) => {
         if (cancelled) return;
+        localConversationIdRef.current = conversationIdFromUrl;
         setMessages(result.data.length > 0 ? result.data : [{
           id: crypto.randomUUID(),
           conversationId: conversationIdFromUrl,
@@ -1564,9 +1556,7 @@ export function ChatPage() {
     const existingConversationId = options.conversationId ?? messages[0]?.conversationId ?? activeUrlConversationId ?? undefined;
     const conversationId = existingConversationId ?? crypto.randomUUID();
     localConversationIdRef.current = conversationId;
-    if (existingConversationId && window.location.pathname.startsWith("/chat") && window.location.search !== `?conv=${conversationId}`) {
-      window.history.pushState(null, "", `/chat?conv=${conversationId}`);
-    }
+    const requestMessages = requestTurns(messagesRef.current, value);
     const attachmentsSnapshot = attachments;
     const userMessage: LocalChatMessage = {
       id: crypto.randomUUID(),
@@ -1594,6 +1584,8 @@ export function ChatPage() {
       if (appendUser) window.setTimeout(() => window.dispatchEvent(new Event(CHAT_SCROLL_BOTTOM_EVENT)), 0);
       return;
     }
+
+    showConversationUrl(conversationId, existingConversationId ? "replace" : "push");
 
     if (appendUser) {
       setMessages((current) => [...current, userMessage]);
@@ -1626,13 +1618,13 @@ export function ChatPage() {
         conversationId,
         model: selectedModel ?? provider?.model ?? undefined,
         provider,
+        messages: requestMessages,
         attachments: requestAttachments,
         signal: requestController.signal,
       });
       if (requestController.signal.aborted || requestControllerRef.current !== requestController) return;
-      if (window.location.pathname.startsWith("/chat") && window.location.search !== `?conv=${result.conversationId}`) {
-        window.history.replaceState(null, "", `/chat?conv=${result.conversationId}`);
-      }
+      localConversationIdRef.current = result.conversationId;
+      showConversationUrl(result.conversationId, "replace");
       setMessages((current) => current.map((message) => message.id === placeholderId ? result.message : message));
       window.dispatchEvent(new Event("luna:conversations-changed"));
     } catch (error) {
@@ -1645,7 +1637,9 @@ export function ChatPage() {
     }
   }
 
-  submitPromptRef.current = submitPrompt;
+  useEffect(() => {
+    submitPromptRef.current = submitPrompt;
+  });
 
   function stopGeneration() {
     requestControllerRef.current?.abort();

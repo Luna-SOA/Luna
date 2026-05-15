@@ -55,8 +55,17 @@ interface LogPayload {
   metadata?: Record<string, unknown>;
 }
 
+interface PendingKafkaMessage {
+  topic: string;
+  key: string;
+  value: string;
+}
+
 let db: DatabaseSync;
 let producer: Producer | undefined;
+let producerConnecting = false;
+const pendingKafkaMessages: PendingKafkaMessage[] = [];
+const maxPendingKafkaMessages = 1_000;
 
 function loadGrpcPackage() {
   const definition = protoLoader.loadSync(protoPath, {
@@ -91,22 +100,74 @@ async function initDb() {
 }
 
 async function initKafka() {
-  if (brokers.length === 0 || brokers.includes("disabled")) return;
-  const kafka = new Kafka({ clientId: serviceName, brokers, logLevel: logLevel.ERROR });
-  const admin = kafka.admin();
-  await admin.connect();
-  try {
-    await admin.createTopics({ waitForLeaders: true, topics: topicNames.map((topic) => ({ topic, numPartitions: 1, replicationFactor: 1 })) });
-  } finally {
-    await admin.disconnect().catch(() => undefined);
+  if (kafkaDisabled() || producer || producerConnecting) return;
+  producerConnecting = true;
+  void (async () => {
+    for (let attempt = 1; !producer; attempt += 1) {
+      const kafka = new Kafka({ clientId: serviceName, brokers, logLevel: logLevel.ERROR });
+      const admin = kafka.admin();
+      let nextProducer: Producer | undefined;
+      try {
+        await admin.connect();
+        await admin.createTopics({ waitForLeaders: true, topics: topicNames.map((topic) => ({ topic, numPartitions: 1, replicationFactor: 1 })) });
+        await admin.disconnect().catch(() => undefined);
+        nextProducer = kafka.producer({ allowAutoTopicCreation: true });
+        await nextProducer.connect();
+        producer = nextProducer;
+        logger.info({ brokers, pending: pendingKafkaMessages.length }, "kafka producer connected");
+        await flushKafkaMessages();
+        return;
+      } catch (error) {
+        await admin.disconnect().catch(() => undefined);
+        await nextProducer?.disconnect().catch(() => undefined);
+        logger.warn({ error, attempt }, "kafka producer unavailable; retrying");
+        await sleep(Math.min(10_000, 1_000 + attempt * 1_000));
+      }
+    }
+  })().finally(() => {
+    producerConnecting = false;
+    if (!producer && pendingKafkaMessages.length > 0) void initKafka();
+  });
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function kafkaDisabled() {
+  return brokers.length === 0 || brokers.includes("disabled");
+}
+
+function queueKafkaMessage(message: PendingKafkaMessage) {
+  if (pendingKafkaMessages.length >= maxPendingKafkaMessages) pendingKafkaMessages.shift();
+  pendingKafkaMessages.push(message);
+}
+
+async function sendKafkaMessage(message: PendingKafkaMessage) {
+  if (!producer) throw new Error("Kafka producer is not connected");
+  await producer.send({ topic: message.topic, messages: [{ key: message.key, value: message.value }] });
+}
+
+async function flushKafkaMessages() {
+  while (producer && pendingKafkaMessages.length > 0) {
+    const message = pendingKafkaMessages.shift();
+    if (!message) return;
+    try {
+      await sendKafkaMessage(message);
+    } catch (error) {
+      pendingKafkaMessages.unshift(message);
+      const staleProducer = producer;
+      producer = undefined;
+      await staleProducer.disconnect().catch(() => undefined);
+      logger.warn({ error, pending: pendingKafkaMessages.length }, "failed to flush kafka events; reconnecting");
+      void initKafka();
+      return;
+    }
   }
-  producer = kafka.producer({ allowAutoTopicCreation: true });
-  await producer.connect();
-  logger.info({ brokers }, "kafka producer connected");
 }
 
 async function publish(topic: string, type: string, payload: unknown, correlationId: string) {
-  if (!producer) return;
+  if (kafkaDisabled()) return;
   const event = {
     id: randomUUID(),
     type,
@@ -116,7 +177,22 @@ async function publish(topic: string, type: string, payload: unknown, correlatio
     correlationId,
     payload
   };
-  await producer.send({ topic, messages: [{ key: correlationId, value: JSON.stringify(event) }] }).catch((error) => logger.warn({ error, topic }, "failed to publish kafka event"));
+  const message: PendingKafkaMessage = { topic, key: correlationId, value: JSON.stringify(event) };
+  if (!producer) {
+    queueKafkaMessage(message);
+    void initKafka();
+    return;
+  }
+  try {
+    await sendKafkaMessage(message);
+  } catch (error) {
+    queueKafkaMessage(message);
+    const staleProducer = producer;
+    producer = undefined;
+    await staleProducer.disconnect().catch(() => undefined);
+    logger.warn({ error, topic }, "failed to publish kafka event");
+    void initKafka();
+  }
 }
 
 function workspaceId(request: GenerateRequest) {
@@ -216,9 +292,9 @@ async function publishLog(request: GenerateRequest, action: string, status: "suc
     action,
     status,
     correlationId,
-    metadata: { latencyMs: Math.round(performance.now() - startedAt), model: selectedModel(request), promptPreview: preview(lastUserMessage(request)), ...attachmentMetadata(request), ...metadata }
+    metadata: { latencyMs: Math.round(performance.now() - startedAt), model: selectedModel(request), provider: providerBaseUrl(request.provider), promptPreview: preview(lastUserMessage(request)), ...attachmentMetadata(request), ...metadata }
   };
-  await publish(topics.logs, "system.log.created", log, correlationId);
+  await publish(topics.logs, topics.logs, log, correlationId);
 }
 
 function grpcError(code: grpc.status, message: string) {

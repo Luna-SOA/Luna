@@ -43,6 +43,12 @@ interface EventEnvelope<T> {
   payload: T;
 }
 
+interface PendingKafkaMessage {
+  topic: string;
+  key: string;
+  value: string;
+}
+
 function loadGrpcPackage() {
   const definition = protoLoader.loadSync(protoPath, {
     keepCase: true,
@@ -123,14 +129,39 @@ function makeEnvelope<T>(type: string, payload: T, correlation: string): EventEn
 }
 
 let producer: Producer | undefined;
+let producerConnecting = false;
+const pendingKafkaMessages: PendingKafkaMessage[] = [];
+const maxPendingKafkaMessages = 1_000;
+
+function kafkaDisabled() {
+  return brokers.length === 0 || brokers.includes("disabled");
+}
 
 async function startKafkaProducer() {
-  if (brokers.length === 0 || brokers.includes("disabled")) return;
-  const kafka = new Kafka({ clientId: serviceName, brokers, logLevel: logLevel.ERROR });
-  await ensureKafkaTopics(kafka);
-  producer = kafka.producer({ allowAutoTopicCreation: true });
-  await producer.connect();
-  logger.info({ brokers }, "kafka producer connected");
+  if (kafkaDisabled() || producer || producerConnecting) return;
+  producerConnecting = true;
+  void (async () => {
+    for (let attempt = 1; !producer; attempt += 1) {
+      const kafka = new Kafka({ clientId: serviceName, brokers, logLevel: logLevel.ERROR });
+      let nextProducer: Producer | undefined;
+      try {
+        await ensureKafkaTopics(kafka);
+        nextProducer = kafka.producer({ allowAutoTopicCreation: true });
+        await nextProducer.connect();
+        producer = nextProducer;
+        logger.info({ brokers, pending: pendingKafkaMessages.length }, "kafka producer connected");
+        await flushKafkaMessages();
+        return;
+      } catch (error) {
+        await nextProducer?.disconnect().catch(() => undefined);
+        logger.warn({ error, attempt }, "kafka producer unavailable; retrying");
+        await sleep(Math.min(10_000, 1_000 + attempt * 1_000));
+      }
+    }
+  })().finally(() => {
+    producerConnecting = false;
+    if (!producer && pendingKafkaMessages.length > 0) void startKafkaProducer();
+  });
 }
 
 function sleep(ms: number) {
@@ -147,17 +178,52 @@ async function ensureKafkaTopics(kafka: Kafka) {
   }
 }
 
-async function publish(topic: string, type: string, payload: unknown, correlation: string) {
-  if (!producer) return;
-  try {
-    await producer.send({ topic, messages: [{ key: correlation, value: JSON.stringify(makeEnvelope(type, payload, correlation)) }] });
-  } catch (error) {
-    logger.warn({ error, topic }, "failed to publish kafka event");
+function queueKafkaMessage(message: PendingKafkaMessage) {
+  if (pendingKafkaMessages.length >= maxPendingKafkaMessages) pendingKafkaMessages.shift();
+  pendingKafkaMessages.push(message);
+}
+
+async function sendKafkaMessage(message: PendingKafkaMessage) {
+  if (!producer) throw new Error("Kafka producer is not connected");
+  await producer.send({ topic: message.topic, messages: [{ key: message.key, value: message.value }] });
+}
+
+async function flushKafkaMessages() {
+  while (producer && pendingKafkaMessages.length > 0) {
+    const message = pendingKafkaMessages.shift();
+    if (!message) return;
+    try {
+      await sendKafkaMessage(message);
+    } catch (error) {
+      pendingKafkaMessages.unshift(message);
+      const staleProducer = producer;
+      producer = undefined;
+      await staleProducer.disconnect().catch(() => undefined);
+      logger.warn({ error, pending: pendingKafkaMessages.length }, "failed to flush kafka events; reconnecting");
+      void startKafkaProducer();
+      return;
+    }
   }
 }
 
-function jsonMetadata(value: unknown) {
-  return JSON.stringify(value ?? {});
+async function publish(topic: string, type: string, payload: unknown, correlation: string) {
+  if (kafkaDisabled()) return;
+  const message: PendingKafkaMessage = { topic, key: correlation, value: JSON.stringify(makeEnvelope(type, payload, correlation)) };
+  if (!producer) {
+    queueKafkaMessage(message);
+    void startKafkaProducer();
+    return;
+  }
+  try {
+    await sendKafkaMessage(message);
+  } catch (error) {
+    queueKafkaMessage(message);
+    const staleProducer = producer;
+    producer = undefined;
+    await staleProducer.disconnect().catch(() => undefined);
+    logger.warn({ error, topic }, "failed to publish kafka event");
+    void startKafkaProducer();
+  }
 }
 
 function parseMetadata(value: unknown) {
@@ -341,6 +407,7 @@ function graphqlRoot(req: Request) {
 
 type LogClient = { res: Response; workspace: string; query: Request["query"] };
 const logClients = new Set<LogClient>();
+const broadcastedLogIds = new Set<string>();
 
 function logMatchesQuery(entry: LogPayload, query: Request["query"]) {
   if (typeof query.service === "string" && query.service.trim() && entry.service !== query.service.trim()) return false;
@@ -355,24 +422,14 @@ function logMatchesQuery(entry: LogPayload, query: Request["query"]) {
 }
 
 function broadcastLog(entry: LogPayload) {
+  if (broadcastedLogIds.has(entry.id)) return;
+  broadcastedLogIds.add(entry.id);
+  setTimeout(() => broadcastedLogIds.delete(entry.id), 60_000).unref?.();
   if (logClients.size === 0) return;
   const data = `data: ${JSON.stringify(entry)}\n\n`;
   for (const client of logClients) {
     if (client.workspace === entry.user && logMatchesQuery(entry, client.query) && !client.res.writableEnded) client.res.write(data);
   }
-}
-
-function grpcLogPayload(log: LogPayload) {
-  return {
-    id: log.id,
-    timestamp: log.timestamp,
-    user: log.user,
-    service: log.service,
-    action: log.action,
-    status: log.status,
-    correlation_id: log.correlationId,
-    metadata_json: jsonMetadata(log.metadata)
-  };
 }
 
 function makeLog(req: Request, action: string, status: LogStatus, metadata: Record<string, unknown> = {}): LogPayload {
@@ -389,17 +446,12 @@ function makeLog(req: Request, action: string, status: LogStatus, metadata: Reco
 }
 
 async function recordAndBroadcastLog(log: LogPayload) {
-  try {
-    await unary(grpcClients.activity, "RecordLog", grpcLogPayload(log));
-  } catch (error) {
-    logger.warn({ error, action: log.action }, "failed to record activity log with gRPC");
-  }
   broadcastLog(log);
-  await publish(topics.logs, "system.log.created", log, log.correlationId);
+  await publish(topics.logs, topics.logs, log, log.correlationId);
 }
 
 async function startLogStreamConsumer() {
-  if (brokers.length === 0 || brokers.includes("disabled")) return;
+  if (kafkaDisabled()) return;
 
   void (async () => {
     for (let attempt = 1; ; attempt += 1) {
@@ -437,7 +489,7 @@ app.use((req, res, next) => {
     if (req.path === "/health" || req.path === "/v1/logs/stream") return;
     if (req.path === "/v1/logs") return;
     if (req.method === "POST" && req.path === "/v1/chat/completions") return;
-    if (req.method === "GET" && (req.path === "/v1/logs" || req.path.startsWith("/v1/conversations"))) return;
+    if (req.path.startsWith("/v1/conversations")) return;
     void recordAndBroadcastLog(makeLog(req, req.path === "/graphql" ? "graphql.request" : `${req.method} ${req.path}`, statusFromCode(res.statusCode), { latencyMs: Math.round(performance.now() - startedAt), method: req.method, path: req.path, statusCode: res.statusCode }));
   });
   next();
@@ -490,18 +542,23 @@ app.get("/v1/models", route(async (req, res) => {
 
 app.post("/v1/chat/completions", route(async (req, res) => {
   await recordAndBroadcastLog(makeLog(req, "chat_request_01_gateway_received", "success", chatGatewayMetadata(req, 1)));
-  const result = await unary<any>(grpcClients.chat, "SendMessage", chatRequest(req));
-  await recordAndBroadcastLog(makeLog(req, "chat_response_07_gateway_returned", "success", chatGatewayMetadata(req, 7, {
-    conversationId: String(result.conversation_id ?? result.message?.conversation_id ?? ""),
-    completionTokens: Number(result.completion_tokens ?? 0),
-    replyPreview: String(result.message?.content ?? "").replace(/\s+/g, " ").trim().slice(0, 1_200)
-  })));
-  res.json({
-    message: messageFromGrpc(result.message),
-    conversationId: String(result.conversation_id ?? result.message?.conversation_id ?? ""),
-    model: String(result.model ?? "unknown-model"),
-    usage: { promptTokens: Number(result.prompt_tokens ?? 0), completionTokens: Number(result.completion_tokens ?? 0) }
-  });
+  try {
+    const result = await unary<any>(grpcClients.chat, "SendMessage", chatRequest(req));
+    await recordAndBroadcastLog(makeLog(req, "chat_response_07_gateway_returned", "success", chatGatewayMetadata(req, 7, {
+      conversationId: String(result.conversation_id ?? result.message?.conversation_id ?? ""),
+      completionTokens: Number(result.completion_tokens ?? 0),
+      replyPreview: String(result.message?.content ?? "").replace(/\s+/g, " ").trim().slice(0, 1_200)
+    })));
+    res.json({
+      message: messageFromGrpc(result.message),
+      conversationId: String(result.conversation_id ?? result.message?.conversation_id ?? ""),
+      model: String(result.model ?? "unknown-model"),
+      usage: { promptTokens: Number(result.prompt_tokens ?? 0), completionTokens: Number(result.completion_tokens ?? 0) }
+    });
+  } catch (error) {
+    await recordAndBroadcastLog(makeLog(req, "chat_response_07_gateway_returned", "error", chatGatewayMetadata(req, 7, { error: grpcMessage(error) })));
+    throw error;
+  }
 }));
 
 app.get("/v1/conversations", route(async (req, res) => {

@@ -87,20 +87,24 @@ sequenceDiagram
   participant A as Activity Service
 
   W->>G: POST /v1/chat/completions
+  G->>K: system.log.created.v1 step 1
   G->>C: gRPC SendMessage(ChatRequest)
   C->>C: Save request in chat.sqlite
   C->>K: chat.message.sent.v1
+  C->>K: system.log.created.v1 step 2
   C->>M: gRPC Generate(GenerateRequest)
   M->>M: Save request in model.sqlite
+  M->>K: system.log.created.v1 step 3
   M-->>C: GenerateResponse
   C->>K: chat.reply.created.v1
-  C->>K: system.log.created.v1
-  M->>K: system.log.created.v1
+  C->>K: system.log.created.v1 step 4
   K-->>A: Consume chat.message.sent.v1
   K-->>A: Consume chat.reply.created.v1
   K-->>A: Consume system.log.created.v1
   A->>A: Save messages and logs in activity.sqlite
+  A->>K: system.log.created.v1 steps 5 and 6
   C-->>G: ChatResponse
+  G->>K: system.log.created.v1 step 7
   G-->>W: Assistant message
 ```
 
@@ -110,15 +114,15 @@ Logs come from Kafka events plus UI actions. Events with the same correlation ID
 
 ```mermaid
 flowchart LR
-  Gateway[API Gateway] -->|system.log.created.v1| Kafka[(Kafka)]
-  Chat[Chat Service] -->|system.log.created.v1| Kafka
-  Model[Model Service] -->|system.log.created.v1| Kafka
-  Client[Web Client] -->|POST /v1/logs| Gateway
-  Gateway -->|gRPC RecordLog| Activity
-  Kafka -->|save logs| Activity[Activity Service]
-  Kafka -->|live logs| Gateway
-  Gateway -->|SSE /v1/logs/stream (workspaceId)| LogsPage[Logs Page Charts]
-  Activity -->|SQLite| LogsDb[(activity.sqlite logs table)]
+  Gateway[API Gateway] -->|"system.log.created.v1"| Kafka[(Kafka)]
+  Chat[Chat Service] -->|"system.log.created.v1"| Kafka
+  Model[Model Service] -->|"system.log.created.v1"| Kafka
+  Client[Web Client] -->|"POST /v1/logs"| Gateway
+  Kafka -->|"save logs"| Activity[Activity Service]
+  Activity -->|"system.log.created.v1"| Kafka
+  Kafka -->|"live logs"| Gateway
+  Gateway -->|"SSE /v1/logs/stream with workspaceId"| LogsPage[Logs Page Charts]
+  Activity -->|"SQLite"| LogsDb[(activity.sqlite logs table)]
 ```
 
 | Chart | Meaning |
@@ -126,6 +130,19 @@ flowchart LR
 | Status | Success, warning, and error events |
 | Services | Which service produced the most events |
 | Latency | Recent processing time from log metadata |
+
+The chat flow card uses these `system.log.created.v1` actions. All events share the same `correlationId`, so the UI can group them as one request.
+
+| Step | Action | Producer | Meaning |
+| --- | --- | --- | --- |
+| 1 | `chat_request_01_gateway_received` | API Gateway | Gateway accepted the HTTP chat request |
+| 2 | `chat_message_02_user_saved` | Chat Service | User prompt was saved and published to `chat.message.sent.v1` |
+| 3 | `model_generate_03_provider_completed` | Model Service | Provider returned assistant text |
+| 4 | `chat_reply_04_assistant_saved` | Chat Service | Assistant reply was published to `chat.reply.created.v1` |
+| 5 | `activity_user_message_05_kafka_consumed` | Activity Service | Activity consumed and stored the user message |
+| 6 | `activity_reply_06_kafka_consumed` | Activity Service | Activity consumed and stored the assistant reply |
+| 7 | `chat_response_07_gateway_returned` | API Gateway | Gateway returned the HTTP response to the web client |
+| 99 | `chat_error_99_failed` | Chat Service | Chat flow failed before completion |
 
 ## Data Ownership
 
@@ -143,16 +160,16 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-  Client[Next.js Client] -->|REST + GraphQL HTTP JSON| Gateway[API Gateway]
-  Gateway -->|gRPC HTTP/2 Protobuf| Chat[Chat Service]
-  Gateway -->|gRPC HTTP/2 Protobuf| Model[Model Service]
-  Gateway -->|gRPC HTTP/2 Protobuf| Activity[Activity Service]
-  Chat -->|gRPC HTTP/2 Protobuf| Model
-  Chat -->|Kafka events| Kafka[(Kafka Broker)]
-  Model -->|Kafka logs| Kafka
-  Gateway -->|Kafka logs| Kafka
-  Kafka -->|Consumes events| Activity
-  Gateway -->|Kafka live logs| Client
+  Client[Next.js Client] -->|"REST and GraphQL HTTP JSON"| Gateway[API Gateway]
+  Gateway -->|"gRPC HTTP/2 Protobuf"| Chat[Chat Service]
+  Gateway -->|"gRPC HTTP/2 Protobuf"| Model[Model Service]
+  Gateway -->|"gRPC HTTP/2 Protobuf"| Activity[Activity Service]
+  Chat -->|"gRPC HTTP/2 Protobuf"| Model
+  Chat -->|"Kafka events"| Kafka[(Kafka Broker)]
+  Model -->|"Kafka logs"| Kafka
+  Gateway -->|"Kafka logs"| Kafka
+  Kafka -->|"Consumes events"| Activity
+  Gateway -->|"Kafka live logs"| Client
   Chat --> ChatDb[(chat.sqlite)]
   Model --> ModelDb[(model.sqlite)]
   Activity --> ActivityDb[(activity.sqlite)]
@@ -177,10 +194,12 @@ sequenceDiagram
   M-->>C: Assistant text
   C->>K: chat.message.sent.v1
   C->>K: chat.reply.created.v1
+  C->>K: system.log.created.v1
   G->>K: system.log.created.v1
   M->>K: system.log.created.v1
   K-->>A: Activity consumes events
   A-->>A: Saves data in SQLite
+  A->>K: system.log.created.v1
   K-->>G: Gateway receives live log events
   G-->>W: SSE live logs for charts
   C-->>G: Chat response
@@ -224,7 +243,7 @@ Base URL: `http://localhost:8080`
 | --- | --- | --- | --- |
 | `chat.message.sent.v1` | Chat Service | Activity Service | Save user message |
 | `chat.reply.created.v1` | Chat Service | Activity Service | Save assistant reply |
-| `system.log.created.v1` | Gateway, Chat, Model | Activity, Gateway | Store and stream logs |
+| `system.log.created.v1` | Gateway, Chat, Model, Activity | Activity, Gateway | Store and stream logs |
 
 ## Install And Run
 

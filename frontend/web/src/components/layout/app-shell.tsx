@@ -142,7 +142,7 @@ function Sidebar({ open, onClose, onSettings, workspaceId }: { open: boolean; on
   const [renameChat, setRenameChat] = useState<Conversation | null>(null);
   const [renameTitle, setRenameTitle] = useState("");
   const deleteDialogRef = useRef<HTMLDivElement>(null);
-  const pathname = usePathname();
+  const refreshTimersRef = useRef<number[]>([]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -153,16 +153,45 @@ function Sidebar({ open, onClose, onSettings, workspaceId }: { open: boolean; on
     return () => { cancelled = true; controller.abort(); };
   }, []);
 
-  const refreshChats = useCallback(() => {
-    getConversations({ page: 1, pageSize: 20 })
-      .then((result) => setChats(result.data))
-      .catch(() => {});
+  const refreshChats = useCallback((options: { retry?: boolean } = {}) => {
+    function schedule(attempt: number) {
+      const timer = window.setTimeout(() => {
+        refreshTimersRef.current = refreshTimersRef.current.filter((item) => item !== timer);
+        run(attempt);
+      }, Math.min(5_000, 450 + attempt * 750));
+      refreshTimersRef.current.push(timer);
+    }
+
+    function run(attempt: number) {
+      getConversations({ page: 1, pageSize: 20 })
+        .then((result) => {
+          setChats(result.data);
+          const activeId = new URLSearchParams(window.location.search).get("conv");
+          if (options.retry && activeId && !result.data.some((chat) => chat.id === activeId) && attempt < 10) schedule(attempt + 1);
+        })
+        .catch(() => {
+          if (options.retry && attempt < 10) schedule(attempt + 1);
+        });
+    }
+
+    run(0);
   }, []);
 
   useEffect(() => {
-    window.addEventListener("luna:conversations-changed", refreshChats);
-    return () => window.removeEventListener("luna:conversations-changed", refreshChats);
+    function onConversationsChanged() {
+      refreshChats({ retry: true });
+    }
+
+    window.addEventListener("luna:conversations-changed", onConversationsChanged);
+    return () => window.removeEventListener("luna:conversations-changed", onConversationsChanged);
   }, [refreshChats]);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of refreshTimersRef.current) window.clearTimeout(timer);
+      refreshTimersRef.current = [];
+    };
+  }, []);
 
   const chatGroups = useMemo(() => {
     const groups: Array<{ label: string; chats: Conversation[] }> = [];
@@ -493,85 +522,6 @@ function SectionHeader({ title, description }: { title: string; description: str
 
 function colorValue(value: string) {
   return `hsl(${value})`;
-}
-
-function ThemeOnlyDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [appearance, setAppearance] = useState<AppearancePreferences>(defaultAppearanceSettings);
-  const [activeFilter, setActiveFilter] = useState<ThemeFilter>("All");
-  const [query, setQuery] = useState("");
-  const deferredQuery = useDeferredValue(query).trim().toLowerCase();
-
-  useEffect(() => {
-    if (open) queueMicrotask(() => setAppearance(loadAppearanceSettings()));
-  }, [open]);
-
-  const selectedTheme = getThemeById(appearance.themeId);
-  const filteredThemes = useMemo(() => themes.filter((theme) => {
-    const categoryMatches = activeFilter === "All" || theme.category === activeFilter;
-    const queryMatches = !deferredQuery || `${theme.name} ${theme.category}`.toLowerCase().includes(deferredQuery);
-    return categoryMatches && queryMatches;
-  }), [activeFilter, deferredQuery]);
-
-  function commit(next: AppearancePreferences) {
-    setAppearance(next);
-    saveAppearanceSettings(next);
-  }
-
-  if (!open) return null;
-
-  return (
-    <div className="fixed inset-0 z-[9999] flex items-end justify-center bg-black/55 p-0 backdrop-blur-sm sm:items-center sm:p-4" onMouseDown={onClose}>
-      <div className="flex h-[82dvh] w-full flex-col overflow-hidden rounded-t-3xl border-x border-t border-border/50 bg-background shadow-panel sm:h-auto sm:max-h-[560px] sm:max-w-2xl sm:rounded-3xl sm:border" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="flex h-14 shrink-0 items-center justify-between border-b border-border/40 px-4">
-          <div>
-            <h2 className="text-base font-semibold text-foreground">Theme</h2>
-            <p className="text-xs text-muted-foreground">{selectedTheme.name}</p>
-          </div>
-          <button type="button" onClick={onClose} className="relative h-9 w-9 shrink-0 rounded-full border border-border/50 bg-background/80 text-muted-foreground transition hover:bg-muted/50 hover:text-foreground">
-            <Icon className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></Icon>
-          </button>
-        </div>
-
-        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border/40 px-3">
-          <Icon className="h-4 w-4 shrink-0 text-muted-foreground"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></Icon>
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search themes..." className="h-full w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground" />
-        </div>
-
-        <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-3">
-          <div className="mb-3 flex flex-wrap gap-1.5">
-            {themeFilters.map((filter) => (
-              <button key={filter} type="button" onClick={() => setActiveFilter(filter)} className={`rounded-full px-3 py-1 text-xs transition-all ${activeFilter === filter ? "bg-foreground text-background" : "bg-muted/30 text-muted-foreground hover:text-foreground"}`}>
-                {filter}
-              </button>
-            ))}
-          </div>
-
-          {filteredThemes.length > 0 ? (
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              {filteredThemes.map((theme) => (
-                <button key={theme.id} type="button" onClick={() => { commit({ ...appearance, themeId: theme.id }); onClose(); }} className={`group relative overflow-hidden rounded-2xl border text-left transition-all duration-150 hover:-translate-y-0.5 hover:shadow-[0_16px_40px_hsl(var(--primary)/0.12)] ${appearance.themeId === theme.id ? "border-primary shadow-[0_0_0_1px_hsl(var(--primary))]" : "opacity-95 hover:opacity-100"}`} style={{ borderColor: appearance.themeId === theme.id ? colorValue(theme.colors.primary) : colorValue(theme.colors.border) }}>
-                  <div className="flex h-20 p-2" style={{ background: colorValue(theme.colors.background) }}>
-                    <div className="mr-2 w-1/4 rounded-lg" style={{ background: colorValue(theme.colors.muted) }} />
-                    <div className="flex flex-1 flex-col gap-1">
-                      <div className="h-2.5 w-4/5 rounded-full" style={{ background: colorValue(theme.colors.primary) }} />
-                      <div className="h-2 w-3/5 rounded-full" style={{ background: colorValue(theme.colors.mutedForeground) }} />
-                      <div className="mt-auto h-7 rounded-xl border" style={{ borderColor: colorValue(theme.colors.border), background: colorValue(theme.colors.card) }} />
-                    </div>
-                  </div>
-                  <div className={`flex items-center justify-between gap-2 px-2 py-2 text-xs font-medium ${appearance.themeId === theme.id ? "bg-primary/10 text-primary" : "bg-muted/20 text-foreground"}`}>
-                    <span className="truncate">{theme.name}</span>
-                    {appearance.themeId === theme.id ? <Icon className="h-3 w-3 shrink-0"><path d="m20 6-11 11-5-5" /></Icon> : null}
-                  </div>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="rounded-2xl border border-border/50 bg-muted/20 p-4 text-sm text-muted-foreground">No themes match your search.</div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function ThemePreviewCard({ theme, selected, onSelect }: { theme: ThemeDefinition; selected: boolean; onSelect: () => void }) {

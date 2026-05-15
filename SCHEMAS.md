@@ -46,12 +46,12 @@ GraphQL is used for flexible read operations. The client can request only the fi
 
 ## Kafka Events
 
-All Kafka messages are JSON envelopes.
+All Kafka messages are JSON envelopes. The envelope `type` matches the Kafka topic name.
 
 ```json
 {
   "id": "event uuid",
-  "type": "event type",
+  "type": "chat.message.sent.v1",
   "version": "1.0",
   "source": "service name",
   "timestamp": "ISO date",
@@ -74,7 +74,7 @@ Payload:
 {
   "workspaceId": "local-workspace",
   "conversationId": "uuid",
-    "model": "gpt-5",
+  "model": "gpt-5",
   "title": "short conversation title",
   "message": {
     "id": "uuid",
@@ -99,7 +99,7 @@ Payload has the same structure as `chat.message.sent.v1`, but `message.role` is 
 
 ### Topic: `system.log.created.v1`
 
-Producers: `api-gateway`, `chat-service`, `model-service`
+Producers: `api-gateway`, `chat-service`, `model-service`, `activity-service`
 
 Consumers: `activity-service`, `api-gateway`
 
@@ -123,7 +123,11 @@ Payload:
 }
 ```
 
-UI actions such as creating a new chat screen, adding a provider, and selecting a model are recorded through `POST /v1/logs`. The API Gateway calls `ActivityService.RecordLog` with gRPC, stores the log in `activity.sqlite`, then publishes the same log to `system.log.created.v1` for the live logs stream.
+UI actions such as creating a new chat screen, adding a provider, and selecting a model are recorded through `POST /v1/logs`. The API Gateway publishes one `system.log.created.v1` event. Activity Service consumes that event and stores it in `activity.sqlite`; API Gateway consumes the same topic for the live SSE stream.
+
+`ActivityService.RecordLog` remains available as a direct gRPC write operation for gRPC testing and internal use. When it records a log, Activity Service also publishes `system.log.created.v1` so live clients see the event through the same stream path.
+
+Chat flow log actions are emitted as `system.log.created.v1` payloads with the same `correlationId`: `chat_request_01_gateway_received`, `chat_message_02_user_saved`, `model_generate_03_provider_completed`, `chat_reply_04_assistant_saved`, `activity_user_message_05_kafka_consumed`, `activity_reply_06_kafka_consumed`, and `chat_response_07_gateway_returned`.
 
 ## SQLite Databases
 

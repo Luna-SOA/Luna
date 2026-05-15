@@ -6,7 +6,7 @@ type Conversation {
   createdAt: String!
   updatedAt: String!
   messageCount: Int!
-  pinned: Boolean
+  pinned: Boolean!
 }
 
 type ChatMessage {
@@ -57,6 +57,7 @@ type Usage {
 }
 
 type Query {
+  models: [String!]!
   conversations(page: Int, pageSize: Int, search: String): ConversationPage!
   conversationMessages(id: ID!): MessageList!
   logs(page: Int, pageSize: Int, service: String, status: String, date: String, search: String): LogPage!

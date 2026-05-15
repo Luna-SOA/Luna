@@ -28,7 +28,8 @@ FROM base AS runner
 ENV NODE_ENV=production
 RUN groupadd --system --gid 1001 nodejs && useradd --system --uid 1001 --gid nodejs appuser
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+COPY railway-start.sh /usr/local/bin/railway-start.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/railway-start.sh
 
 COPY --from=prod-deps --chown=appuser:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=appuser:nodejs /app/backend/proto ./backend/proto
@@ -43,4 +44,4 @@ COPY --from=builder --chown=appuser:nodejs /app/frontend/web/public ./frontend/w
 ENTRYPOINT ["docker-entrypoint.sh"]
 EXPOSE 3000 8080 4102 4103 4104 5102 5103 5104
 
-CMD ["node", "backend/gateway/dist/index.js"]
+CMD ["railway-start.sh"]

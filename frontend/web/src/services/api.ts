@@ -3,6 +3,7 @@ import type { ChatMessage, Conversation, LogEntry, Paginated } from "@/types";
 
 const configuredBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, "") ?? "";
 const defaultDevBaseUrl = "http://localhost:8080";
+const sameOriginProxyBaseUrl = "/api";
 const requestTimeoutMs = 15_000;
 const chatRequestTimeoutMs = 120_000;
 const logStreamConnectTimeoutMs = 30_000;
@@ -15,8 +16,14 @@ export interface ChatAttachmentPayload {
   truncated?: boolean;
 }
 
+export interface ChatTurnPayload {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
 export function getApiBaseUrl() {
   if (configuredBaseUrl) return configuredBaseUrl;
+  if (typeof window !== "undefined" && process.env.NODE_ENV === "production" && window.location.port !== "3000") return sameOriginProxyBaseUrl;
   return defaultDevBaseUrl;
 }
 
@@ -89,7 +96,7 @@ async function requestJson<T>(path: string, options: RequestInit = {}, timeoutMs
   return response.json() as Promise<T>;
 }
 
-export async function sendChatMessage(input: { content: string; conversationId?: string; model?: string; provider?: { base_url: string; api_key: string; model: string }; attachments?: ChatAttachmentPayload[]; signal?: AbortSignal }) {
+export async function sendChatMessage(input: { content: string; conversationId?: string; model?: string; provider?: { base_url: string; api_key: string; model: string }; messages?: ChatTurnPayload[]; attachments?: ChatAttachmentPayload[]; signal?: AbortSignal }) {
   return requestJson<{ message: ChatMessage; conversationId: string }>("/v1/chat/completions", {
     method: "POST",
     signal: input.signal,
@@ -98,7 +105,7 @@ export async function sendChatMessage(input: { content: string; conversationId?:
       ...(input.model ? { model: input.model } : {}),
       ...(input.provider ? { provider: input.provider } : {}),
       ...(input.attachments?.length ? { attachments: input.attachments } : {}),
-      messages: [{ role: "user", content: input.content }]
+      messages: input.messages?.length ? input.messages : [{ role: "user", content: input.content }]
     })
   }, chatRequestTimeoutMs);
 }
