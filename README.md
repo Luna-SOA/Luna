@@ -1,5 +1,3 @@
-# Luna
-
 <p align="center">
   <img src="frontend/web/src/assets/logo.png" alt="Luna logo" width="360" />
 </p>
