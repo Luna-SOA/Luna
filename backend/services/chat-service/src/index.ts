@@ -111,12 +111,9 @@ async function initKafka() {
   void (async () => {
     for (let attempt = 1; !producer; attempt += 1) {
       const kafka = new Kafka({ clientId: serviceName, brokers, logLevel: logLevel.ERROR });
-      const admin = kafka.admin();
       let nextProducer: Producer | undefined;
       try {
-        await admin.connect();
-        await admin.createTopics({ waitForLeaders: true, topics: topicNames.map((topic) => ({ topic, numPartitions: 1, replicationFactor: 1 })) });
-        await admin.disconnect().catch(() => undefined);
+        await ensureKafkaTopics(kafka);
         nextProducer = kafka.producer({ allowAutoTopicCreation: true });
         await nextProducer.connect();
         producer = nextProducer;
@@ -124,7 +121,6 @@ async function initKafka() {
         await flushKafkaMessages();
         return;
       } catch (error) {
-        await admin.disconnect().catch(() => undefined);
         await nextProducer?.disconnect().catch(() => undefined);
         logger.warn({ error, attempt }, "kafka producer unavailable; retrying");
         await sleep(Math.min(10_000, 1_000 + attempt * 1_000));
@@ -138,6 +134,19 @@ async function initKafka() {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function ensureKafkaTopics(kafka: Kafka) {
+  const admin = kafka.admin();
+  await admin.connect();
+  try {
+    const existing = new Set(await admin.listTopics());
+    const missing = topicNames.filter((topic) => !existing.has(topic));
+    if (missing.length === 0) return;
+    await admin.createTopics({ waitForLeaders: true, topics: missing.map((topic) => ({ topic, numPartitions: 1, replicationFactor: 1 })) });
+  } finally {
+    await admin.disconnect().catch(() => undefined);
+  }
 }
 
 function kafkaDisabled() {

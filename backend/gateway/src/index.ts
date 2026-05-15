@@ -172,7 +172,10 @@ async function ensureKafkaTopics(kafka: Kafka) {
   const admin = kafka.admin();
   await admin.connect();
   try {
-    await admin.createTopics({ waitForLeaders: true, topics: topicNames.map((topic) => ({ topic, numPartitions: 1, replicationFactor: 1 })) });
+    const existing = new Set(await admin.listTopics());
+    const missing = topicNames.filter((topic) => !existing.has(topic));
+    if (missing.length === 0) return;
+    await admin.createTopics({ waitForLeaders: true, topics: missing.map((topic) => ({ topic, numPartitions: 1, replicationFactor: 1 })) });
   } finally {
     await admin.disconnect().catch(() => undefined);
   }
