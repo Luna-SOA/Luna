@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="frontend/web/src/assets/logo.png" alt="Luna logo" width="360" />
+  <img src="frontend/web/src/assets/logo.png" alt="Luna logo" width="250" />
 </p>
 
 Luna is a Node.js microservices platform for a real-time AI chat experience. It supports any OpenAI-compatible provider, keeps conversation history, and streams structured activity logs into a live UI.
