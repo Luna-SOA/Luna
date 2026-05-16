@@ -51,7 +51,7 @@ const settingsItems = [
 
 type SettingsTab = (typeof settingsItems)[number]["id"];
 type OpenSettingsDetail = { tab?: SettingsTab };
-type ConversationsChangedDetail = { conversation?: Partial<Conversation> & { id: string } };
+type ConversationsChangedDetail = { conversation?: Partial<Conversation> & { id: string }; removeId?: string };
 
 function mergeConversation(current: Conversation[], incoming: Partial<Conversation> & { id: string }, workspaceId: string) {
   const now = new Date().toISOString();
@@ -162,6 +162,7 @@ function Sidebar({ open, onClose, onSettings, workspaceId }: { open: boolean; on
   const [renameTitle, setRenameTitle] = useState("");
   const deleteDialogRef = useRef<HTMLDivElement>(null);
   const refreshTimersRef = useRef<number[]>([]);
+  const pendingConversationsRef = useRef<Map<string, Conversation>>(new Map());
 
   useEffect(() => {
     const controller = new AbortController();
@@ -170,7 +171,7 @@ function Sidebar({ open, onClose, onSettings, workspaceId }: { open: boolean; on
       .then((result) => { if (!cancelled) setChats(result.data); })
       .catch(() => {});
     return () => { cancelled = true; controller.abort(); };
-  }, []);
+  }, [workspaceId]);
 
   const refreshChats = useCallback((options: { retry?: boolean } = {}) => {
     function schedule(attempt: number) {
@@ -184,7 +185,10 @@ function Sidebar({ open, onClose, onSettings, workspaceId }: { open: boolean; on
     function run(attempt: number) {
       getConversations({ page: 1, pageSize: 20 })
         .then((result) => {
-          setChats(result.data);
+          for (const chat of result.data) pendingConversationsRef.current.delete(chat.id);
+          const pending = [...pendingConversationsRef.current.values()];
+          const merged = pending.reduce((items, chat) => mergeConversation(items, chat, workspaceId), result.data);
+          setChats(merged);
           const activeId = new URLSearchParams(window.location.search).get("conv");
           if (options.retry && activeId && !result.data.some((chat) => chat.id === activeId) && attempt < 10) schedule(attempt + 1);
         })
@@ -194,12 +198,20 @@ function Sidebar({ open, onClose, onSettings, workspaceId }: { open: boolean; on
     }
 
     run(0);
-  }, []);
+  }, [workspaceId]);
 
   useEffect(() => {
     function onConversationsChanged(event: Event) {
-      const conversation = (event as CustomEvent<ConversationsChangedDetail>).detail?.conversation;
-      if (conversation) setChats((current) => mergeConversation(current, conversation, workspaceId));
+      const detail = (event as CustomEvent<ConversationsChangedDetail>).detail;
+      if (detail?.removeId) {
+        pendingConversationsRef.current.delete(detail.removeId);
+        setChats((current) => current.filter((chat) => chat.id !== detail.removeId));
+      }
+      if (detail?.conversation) {
+        const merged = mergeConversation([], detail.conversation, workspaceId)[0];
+        pendingConversationsRef.current.set(merged.id, merged);
+        setChats((current) => mergeConversation(current, merged, workspaceId));
+      }
       refreshChats({ retry: true });
     }
 

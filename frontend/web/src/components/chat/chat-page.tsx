@@ -82,9 +82,9 @@ function conversationTitle(content: string) {
   return title.length > 64 ? `${title.slice(0, 61)}...` : title || "Untitled conversation";
 }
 
-function announceConversationChanged(conversation?: { id: string; title: string; model: string; createdAt?: string; updatedAt?: string; messageCount?: number }) {
+function announceConversationChanged(options: { conversation?: { id: string; title: string; model: string; createdAt?: string; updatedAt?: string; messageCount?: number }; removeId?: string } = {}) {
   if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent("luna:conversations-changed", { detail: conversation ? { conversation } : undefined }));
+  window.dispatchEvent(new CustomEvent("luna:conversations-changed", { detail: options }));
 }
 
 function Icon({ children, className = "h-4 w-4", fill = "none" }: { children: ReactNode; className?: string; fill?: string }) {
@@ -1564,6 +1564,7 @@ export function ChatPage() {
     setThinkingMessage("Luna is thinking...");
     const activeUrlConversationId = typeof window === "undefined" ? conversationIdFromUrl : new URLSearchParams(window.location.search).get("conv");
     const existingConversationId = options.conversationId ?? messages[0]?.conversationId ?? activeUrlConversationId ?? undefined;
+    const isNewConversation = !existingConversationId;
     const conversationId = existingConversationId ?? crypto.randomUUID();
     localConversationIdRef.current = conversationId;
     const requestMessages = requestTurns(messagesRef.current, value);
@@ -1596,15 +1597,17 @@ export function ChatPage() {
     }
 
     showConversationUrl(conversationId, existingConversationId ? "replace" : "push");
-    if (!existingConversationId) {
+    if (isNewConversation) {
       const now = new Date().toISOString();
       announceConversationChanged({
-        id: conversationId,
-        title: conversationTitle(value),
-        model: selectedModel ?? provider.model,
-        createdAt: now,
-        updatedAt: now,
-        messageCount: 1
+        conversation: {
+          id: conversationId,
+          title: conversationTitle(value),
+          model: selectedModel ?? provider.model,
+          createdAt: now,
+          updatedAt: now,
+          messageCount: 1
+        }
       });
     }
 
@@ -1647,13 +1650,20 @@ export function ChatPage() {
       localConversationIdRef.current = result.conversationId;
       showConversationUrl(result.conversationId, "replace");
       setMessages((current) => current.map((message) => message.id === placeholderId ? result.message : message));
-      announceConversationChanged({
-        id: result.conversationId,
-        title: conversationTitle(value),
-        model: selectedModel ?? provider.model,
-        updatedAt: new Date().toISOString(),
-        messageCount: 2
-      });
+      if (isNewConversation) {
+        announceConversationChanged({
+          removeId: result.conversationId === conversationId ? undefined : conversationId,
+          conversation: {
+            id: result.conversationId,
+            title: conversationTitle(value),
+            model: selectedModel ?? provider.model,
+            updatedAt: new Date().toISOString(),
+            messageCount: 2
+          }
+        });
+      } else {
+        announceConversationChanged();
+      }
     } catch (error) {
       if (requestController.signal.aborted || requestControllerRef.current !== requestController) return;
       const message = error instanceof Error ? error.message : "Network error";

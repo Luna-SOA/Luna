@@ -606,11 +606,17 @@ app.get("/v1/logs", route(async (req, res) => {
 }));
 
 app.get("/v1/logs/stream", route(async (req, res) => {
-  const snapshot = await listLogs(req);
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
-  res.write(`data: ${JSON.stringify({ type: "snapshot", ...snapshot })}\n\n`);
+  res.flushHeaders();
+
+  try {
+    const snapshot = await listLogs(req);
+    res.write(`data: ${JSON.stringify({ type: "snapshot", ...snapshot })}\n\n`);
+  } catch (error) {
+    res.write(`data: ${JSON.stringify({ error: grpcMessage(error) })}\n\n`);
+  }
 
   const client: LogClient = { res, workspace: workspaceLabel(req), query: req.query };
   logClients.add(client);
