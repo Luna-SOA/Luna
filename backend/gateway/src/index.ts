@@ -607,19 +607,15 @@ app.get("/v1/logs", route(async (req, res) => {
 
 app.get("/v1/logs/stream", route(async (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
-
-  try {
-    const snapshot = await listLogs(req);
-    res.write(`data: ${JSON.stringify({ type: "snapshot", ...snapshot })}\n\n`);
-  } catch (error) {
-    res.write(`data: ${JSON.stringify({ error: grpcMessage(error) })}\n\n`);
-  }
 
   const client: LogClient = { res, workspace: workspaceLabel(req), query: req.query };
   logClients.add(client);
+  res.write(": connected\n\n");
+
   const keepAlive = setInterval(() => {
     if (!res.writableEnded) res.write(": keep-alive\n\n");
   }, 20_000);
@@ -629,6 +625,12 @@ app.get("/v1/logs/stream", route(async (req, res) => {
   };
   req.on("aborted", cleanup);
   res.on("close", cleanup);
+
+  void listLogs(req).then((snapshot) => {
+    if (!res.writableEnded) res.write(`data: ${JSON.stringify({ type: "snapshot", ...snapshot })}\n\n`);
+  }).catch((error) => {
+    if (!res.writableEnded) res.write(`data: ${JSON.stringify({ error: grpcMessage(error) })}\n\n`);
+  });
 }));
 
 app.post("/v1/logs", route(async (req, res) => {
