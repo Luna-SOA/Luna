@@ -1,27 +1,77 @@
 {
   "info": {
-    "name": "SOA Clean Microservices Tests",
-    "description": "REST, GraphQL, and gRPC test guide for the clean Node.js microservices project. Set providerBaseUrl, providerApiKey, and model in the environment before running chat requests because the app has no demo answer fallback.",
+    "name": "Luna SOA Public Tests - REST GraphQL gRPC",
+    "description": "Public-ready Postman collection for Luna. It contains runnable REST requests, runnable GraphQL requests, gRPC setup examples, and saved example responses. Select the Luna SOA Hosted environment first. REST and GraphQL smoke tests work without a provider key. Chat/provider requests need a real OpenAI-compatible provider key.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "baseUrl", "value": "http://localhost:8080" },
+    { "key": "baseUrl", "value": "https://web-production-3f2f4.up.railway.app/api" },
     { "key": "workspaceId", "value": "postman-workspace" },
     { "key": "conversationId", "value": "" },
+    { "key": "lastLogId", "value": "" },
     { "key": "providerBaseUrl", "value": "https://api.openai.com/v1" },
     { "key": "providerApiKey", "value": "replace-with-your-api-key" },
     { "key": "model", "value": "gpt-5" }
   ],
   "item": [
     {
-      "name": "REST",
+      "name": "00 - Start Here",
+      "description": "Run these first. 1. Select the Luna SOA Hosted environment. 2. Run Health Check. 3. Run Record Test Log. 4. Run GraphQL Dashboard Query. Provider/chat tests need providerApiKey and model.",
       "item": [
         {
           "name": "Health Check",
-          "request": { "method": "GET", "header": [], "url": "{{baseUrl}}/health" }
+          "description": "Confirms that the API Gateway is reachable through the selected baseUrl.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gateway is healthy', () => pm.response.to.have.status(200));",
+                  "pm.test('service is api-gateway', () => pm.expect(pm.response.json().service).to.eql('api-gateway'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/health"
+          },
+          "response": [
+            {
+              "name": "200 OK - Railway",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                { "key": "Content-Type", "value": "application/json; charset=utf-8" }
+              ],
+              "body": "{\n  \"service\": \"api-gateway\",\n  \"status\": \"ok\",\n  \"grpc\": {\n    \"chat\": \"chat-service.railway.internal:5102\",\n    \"model\": \"model-service.railway.internal:5103\",\n    \"activity\": \"activity-service.railway.internal:5104\"\n  }\n}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/health"
+              }
+            }
+          ]
         },
         {
-          "name": "Fetch Provider Models",
+          "name": "Record Test Log",
+          "description": "Creates a test activity log through REST. The log is stored by Activity Service and streamed live through SSE.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log created', () => pm.response.to.have.status(201));",
+                  "const json = pm.response.json();",
+                  "if (json.log && json.log.id) pm.environment.set('lastLogId', json.log.id);"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [
@@ -30,13 +80,246 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"baseUrl\": \"{{providerBaseUrl}}\",\n  \"apiKey\": \"{{providerApiKey}}\"\n}"
+              "raw": "{\n  \"service\": \"postman-client\",\n  \"action\": \"postman.smoke.test\",\n  \"status\": \"success\",\n  \"metadata\": {\n    \"source\": \"postman\",\n    \"path\": \"REST -> Gateway -> Kafka -> Activity Service\"\n  }\n}"
             },
+            "url": "{{baseUrl}}/v1/logs"
+          },
+          "response": [
+            {
+              "name": "201 Created - saved log example",
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "json",
+              "header": [
+                { "key": "Content-Type", "value": "application/json; charset=utf-8" }
+              ],
+              "body": "{\n  \"log\": {\n    \"id\": \"example-log-id\",\n    \"timestamp\": \"2026-05-16T08:16:15.944Z\",\n    \"user\": \"workspace:postman-workspace\",\n    \"service\": \"postman-client\",\n    \"action\": \"postman.smoke.test\",\n    \"status\": \"success\",\n    \"correlationId\": \"example-correlation-id\",\n    \"metadata\": {\n      \"source\": \"postman\",\n      \"path\": \"REST -> Gateway -> Kafka -> Activity Service\"\n    }\n  }\n}",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  { "key": "content-type", "value": "application/json" },
+                  { "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"service\": \"postman-client\",\n  \"action\": \"postman.smoke.test\",\n  \"status\": \"success\",\n  \"metadata\": {\n    \"source\": \"postman\",\n    \"path\": \"REST -> Gateway -> Kafka -> Activity Service\"\n  }\n}"
+                },
+                "url": "{{baseUrl}}/v1/logs"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "01 - REST Tests",
+      "description": "REST endpoints exposed by the API Gateway. These requests use x-luna-workspace-id so data stays grouped in one workspace.",
+      "item": [
+        {
+          "name": "List Conversations",
+          "description": "Returns conversations stored by Activity Service for the selected workspace.",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": ["pm.test('conversations listed', () => pm.response.to.have.status(200));"] }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }],
+            "url": "{{baseUrl}}/v1/conversations?page=1&pageSize=10"
+          },
+          "response": [
+            {
+              "name": "200 OK - empty workspace example",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json; charset=utf-8" }],
+              "body": "{\n  \"data\": [],\n  \"page\": 1,\n  \"pageSize\": 10,\n  \"total\": 0,\n  \"totalPages\": 1\n}",
+              "originalRequest": { "method": "GET", "header": [{ "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }], "url": "{{baseUrl}}/v1/conversations?page=1&pageSize=10" }
+            }
+          ]
+        },
+        {
+          "name": "Get Conversation Messages",
+          "description": "Run Send Chat Message first so the conversationId environment variable is filled automatically.",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }],
+            "url": "{{baseUrl}}/v1/conversations/{{conversationId}}/messages"
+          },
+          "response": [
+            {
+              "name": "200 OK - messages example",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json; charset=utf-8" }],
+              "body": "{\n  \"data\": [\n    {\n      \"id\": \"message-id\",\n      \"conversationId\": \"conversation-id\",\n      \"role\": \"user\",\n      \"content\": \"Hello Luna\",\n      \"createdAt\": \"2026-05-16T08:00:00.000Z\",\n      \"tokens\": 2\n    }\n  ]\n}",
+              "originalRequest": { "method": "GET", "header": [{ "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }], "url": "{{baseUrl}}/v1/conversations/{{conversationId}}/messages" }
+            }
+          ]
+        },
+        {
+          "name": "List Logs",
+          "description": "Returns stored logs. If you just ran Record Test Log, it appears here.",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": ["pm.test('logs listed', () => pm.response.to.have.status(200));"] }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }],
+            "url": "{{baseUrl}}/v1/logs?page=1&pageSize=20"
+          },
+          "response": [
+            {
+              "name": "200 OK - logs example",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json; charset=utf-8" }],
+              "body": "{\n  \"data\": [\n    {\n      \"id\": \"example-log-id\",\n      \"timestamp\": \"2026-05-16T08:27:45.729Z\",\n      \"user\": \"workspace:postman-workspace\",\n      \"service\": \"api-gateway\",\n      \"action\": \"graphql.request\",\n      \"status\": \"success\",\n      \"correlationId\": \"example-correlation-id\",\n      \"metadata\": {\n        \"latencyMs\": 13,\n        \"method\": \"POST\",\n        \"path\": \"/graphql\",\n        \"statusCode\": 200\n      }\n    }\n  ],\n  \"page\": 1,\n  \"pageSize\": 20,\n  \"total\": 1,\n  \"totalPages\": 1\n}",
+              "originalRequest": { "method": "GET", "header": [{ "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }], "url": "{{baseUrl}}/v1/logs?page=1&pageSize=20" }
+            }
+          ]
+        },
+        {
+          "name": "Usage Analytics",
+          "description": "Aggregated usage numbers from Activity Service.",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": ["pm.test('usage returned', () => pm.response.to.have.status(200));"] }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }],
+            "url": "{{baseUrl}}/v1/analytics/usage"
+          },
+          "response": [
+            {
+              "name": "200 OK - usage example",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json; charset=utf-8" }],
+              "body": "{\n  \"activeUsers\": 1,\n  \"conversations\": 0,\n  \"messages\": 0,\n  \"errorRate\": 0,\n  \"averageLatencyMs\": 13\n}",
+              "originalRequest": { "method": "GET", "header": [{ "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }], "url": "{{baseUrl}}/v1/analytics/usage" }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 - GraphQL Tests",
+      "description": "GraphQL is exposed by the API Gateway at POST /graphql. The website UI mostly uses REST, but this endpoint is working and testable here.",
+      "item": [
+        {
+          "name": "Dashboard Query",
+          "description": "Reads conversations, logs, and usage in one GraphQL request.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GraphQL request succeeded', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('GraphQL data exists', () => pm.expect(json.data).to.be.an('object'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "content-type", "value": "application/json" },
+              { "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"query Dashboard { conversations(page: 1, pageSize: 5) { total data { id title model messageCount updatedAt } } logs(page: 1, pageSize: 10) { total data { service action status timestamp correlationId } } usage { conversations messages errorRate averageLatencyMs } }\"\n}"
+            },
+            "url": "{{baseUrl}}/graphql"
+          },
+          "response": [
+            {
+              "name": "200 OK - dashboard example",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json; charset=utf-8" }],
+              "body": "{\n  \"data\": {\n    \"conversations\": {\n      \"total\": 0,\n      \"data\": []\n    },\n    \"logs\": {\n      \"total\": 1,\n      \"data\": [\n        {\n          \"service\": \"api-gateway\",\n          \"action\": \"graphql.request\",\n          \"status\": \"success\",\n          \"timestamp\": \"2026-05-16T08:27:45.729Z\",\n          \"correlationId\": \"example-correlation-id\"\n        }\n      ]\n    },\n    \"usage\": {\n      \"conversations\": 0,\n      \"messages\": 0,\n      \"errorRate\": 0,\n      \"averageLatencyMs\": 13\n    }\n  }\n}",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  { "key": "content-type", "value": "application/json" },
+                  { "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }
+                ],
+                "body": { "mode": "raw", "raw": "{\n  \"query\": \"query Dashboard { conversations(page: 1, pageSize: 5) { total data { id title model messageCount updatedAt } } logs(page: 1, pageSize: 10) { total data { service action status timestamp correlationId } } usage { conversations messages errorRate averageLatencyMs } }\"\n}" },
+                "url": "{{baseUrl}}/graphql"
+              }
+            }
+          ]
+        },
+        {
+          "name": "GraphQL Schema",
+          "description": "Returns the schema text served by the gateway.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/graphql/schema"
+          },
+          "response": [
+            {
+              "name": "200 OK - schema excerpt",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "text",
+              "header": [{ "key": "Content-Type", "value": "text/plain; charset=utf-8" }],
+              "body": "type Conversation { id: ID!, workspaceId: ID!, title: String!, model: String!, createdAt: String!, updatedAt: String!, messageCount: Int!, pinned: Boolean! }\ntype ChatMessage { id: ID!, conversationId: ID!, role: String!, content: String!, createdAt: String!, tokens: Int }\ntype LogEntry { id: ID!, timestamp: String!, user: String!, service: String!, action: String!, status: String!, correlationId: String! }\ntype Query { models: [String!]!, conversations(page: Int, pageSize: Int, search: String): ConversationPage!, conversationMessages(id: ID!): MessageList!, logs(page: Int, pageSize: Int, service: String, status: String, date: String, search: String): LogPage!, usage: Usage! }",
+              "originalRequest": { "method": "GET", "header": [], "url": "{{baseUrl}}/graphql/schema" }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 - Provider Chat Tests",
+      "description": "These requests require a real OpenAI-compatible provider. Set providerBaseUrl, providerApiKey, and model before running.",
+      "item": [
+        {
+          "name": "Fetch Provider Models",
+          "description": "Calls the configured provider through Model Service. Requires providerApiKey.",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "content-type", "value": "application/json" },
+              { "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"baseUrl\": \"{{providerBaseUrl}}\",\n  \"apiKey\": \"{{providerApiKey}}\"\n}" },
             "url": "{{baseUrl}}/v1/provider/models"
-          }
+          },
+          "response": [
+            {
+              "name": "200 OK - provider models example",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json; charset=utf-8" }],
+              "body": "{\n  \"models\": [\n    \"gpt-5\",\n    \"gpt-4.1\"\n  ]\n}",
+              "originalRequest": { "method": "POST", "header": [{ "key": "content-type", "value": "application/json" }, { "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }], "body": { "mode": "raw", "raw": "{\n  \"baseUrl\": \"{{providerBaseUrl}}\",\n  \"apiKey\": \"{{providerApiKey}}\"\n}" }, "url": "{{baseUrl}}/v1/provider/models" }
+            }
+          ]
         },
         {
           "name": "Send Chat Message With Real Provider",
+          "description": "Sends one chat message through REST -> Gateway -> Chat Service -> Model Service -> provider. On success, the conversationId environment variable is saved.",
           "event": [
             {
               "listen": "test",
@@ -61,122 +344,79 @@
               "raw": "{\n  \"model\": \"{{model}}\",\n  \"provider\": {\n    \"base_url\": \"{{providerBaseUrl}}\",\n    \"api_key\": \"{{providerApiKey}}\",\n    \"model\": \"{{model}}\"\n  },\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Explain why this project uses gRPC and Kafka in simple terms.\" }\n  ]\n}"
             },
             "url": "{{baseUrl}}/v1/chat/completions"
-          }
-        },
-        {
-          "name": "Record UI Log Through Gateway And gRPC",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "content-type", "value": "application/json" },
-              { "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"service\": \"web-client\",\n  \"action\": \"postman.ui.test\",\n  \"status\": \"success\",\n  \"metadata\": {\n    \"source\": \"postman\",\n    \"path\": \"Gateway REST -> Activity gRPC -> Kafka live log\"\n  }\n}"
-            },
-            "url": "{{baseUrl}}/v1/logs"
-          }
-        },
-        {
-          "name": "List Conversations",
-          "request": {
-            "method": "GET",
-            "header": [{ "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }],
-            "url": "{{baseUrl}}/v1/conversations?page=1&pageSize=10"
-          }
-        },
-        {
-          "name": "Get Conversation Messages",
-          "request": {
-            "method": "GET",
-            "header": [{ "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }],
-            "url": "{{baseUrl}}/v1/conversations/{{conversationId}}/messages"
-          }
-        },
-        {
-          "name": "List Logs",
-          "request": {
-            "method": "GET",
-            "header": [{ "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }],
-            "url": "{{baseUrl}}/v1/logs?page=1&pageSize=20"
-          }
-        },
-        {
-          "name": "Usage Analytics",
-          "request": {
-            "method": "GET",
-            "header": [{ "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }],
-            "url": "{{baseUrl}}/v1/analytics/usage"
-          }
+          },
+          "response": [
+            {
+              "name": "200 OK - chat response example",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json; charset=utf-8" }],
+              "body": "{\n  \"message\": {\n    \"id\": \"assistant-message-id\",\n    \"conversationId\": \"conversation-id\",\n    \"role\": \"assistant\",\n    \"content\": \"gRPC is used for fast internal service-to-service calls, while Kafka is used to publish events between services asynchronously.\",\n    \"createdAt\": \"2026-05-16T08:00:00.000Z\",\n    \"tokens\": 24\n  },\n  \"conversationId\": \"conversation-id\",\n  \"model\": \"gpt-5\",\n  \"usage\": {\n    \"promptTokens\": 14,\n    \"completionTokens\": 24\n  }\n}",
+              "originalRequest": { "method": "POST", "header": [{ "key": "content-type", "value": "application/json" }, { "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"{{model}}\",\n  \"provider\": {\n    \"base_url\": \"{{providerBaseUrl}}\",\n    \"api_key\": \"{{providerApiKey}}\",\n    \"model\": \"{{model}}\"\n  },\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Explain why this project uses gRPC and Kafka in simple terms.\" }\n  ]\n}" }, "url": "{{baseUrl}}/v1/chat/completions" }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "GraphQL",
+      "name": "04 - gRPC Tests To Create In Postman",
+      "description": "Postman gRPC requests are created from the gRPC tab, not from normal HTTP requests. Use backend/proto/platform.proto. Local addresses: ChatService localhost:5102, ModelService localhost:5103, ActivityService localhost:5104. Railway private gRPC addresses are internal and are not publicly reachable from Postman.",
       "item": [
         {
-          "name": "Dashboard Query",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "content-type", "value": "application/json" },
-              { "key": "x-luna-workspace-id", "value": "{{workspaceId}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"query\": \"query Dashboard { conversations(page: 1, pageSize: 5) { total data { id title model messageCount updatedAt } } logs(page: 1, pageSize: 10) { total data { service action status timestamp correlationId } } usage { conversations messages errorRate averageLatencyMs } }\"\n}"
-            },
-            "url": "{{baseUrl}}/graphql"
-          }
-        }
-      ]
-    },
-    {
-      "name": "gRPC Requests To Create In Postman",
-      "description": "Use Postman's gRPC tab, import backend/proto/platform.proto, then create these requests. The HTTP request objects below only store example JSON bodies for easy copying.",
-      "item": [
+          "name": "gRPC setup steps",
+          "description": "In Postman: New > gRPC. Enter localhost:5103. Import backend/proto/platform.proto. Select simplechat.v1.ModelService/ListModels. Paste the body from the next request. Click Invoke. Repeat for ChatService and ActivityService.",
+          "request": { "method": "GET", "header": [], "url": "{{baseUrl}}/health" },
+          "response": [
+            {
+              "name": "Documentation only",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "text",
+              "header": [{ "key": "Content-Type", "value": "text/plain" }],
+              "body": "This item documents gRPC setup. Real gRPC calls must be created in Postman's gRPC tab using backend/proto/platform.proto.",
+              "originalRequest": { "method": "GET", "header": [], "url": "{{baseUrl}}/health" }
+            }
+          ]
+        },
         {
-          "name": "ModelService.ListModels example body",
+          "name": "ModelService.ListModels body and saved response",
+          "description": "gRPC address: localhost:5103. Method: simplechat.v1.ModelService/ListModels.",
           "request": {
             "method": "POST",
             "header": [{ "key": "content-type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"provider\": {\n    \"base_url\": \"{{providerBaseUrl}}\",\n    \"api_key\": \"{{providerApiKey}}\",\n    \"model\": \"{{model}}\"\n  }\n}"
-            },
+            "body": { "mode": "raw", "raw": "{\n  \"provider\": {\n    \"base_url\": \"{{providerBaseUrl}}\",\n    \"api_key\": \"{{providerApiKey}}\",\n    \"model\": \"{{model}}\"\n  }\n}" },
             "url": "{{baseUrl}}/health"
-          }
+          },
+          "response": [
+            { "name": "gRPC response example", "status": "OK", "code": 200, "_postman_previewlanguage": "json", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": "{\n  \"models\": [\n    \"gpt-5\",\n    \"gpt-4.1\"\n  ]\n}", "originalRequest": { "method": "POST", "header": [{ "key": "content-type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"provider\": {\n    \"base_url\": \"{{providerBaseUrl}}\",\n    \"api_key\": \"{{providerApiKey}}\",\n    \"model\": \"{{model}}\"\n  }\n}" }, "url": "{{baseUrl}}/health" } }
+          ]
         },
         {
-          "name": "ChatService.SendMessage example body",
+          "name": "ChatService.SendMessage body and saved response",
+          "description": "gRPC address: localhost:5102. Method: simplechat.v1.ChatService/SendMessage.",
           "request": {
             "method": "POST",
             "header": [{ "key": "content-type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"workspace_id\": \"postman-workspace\",\n  \"request_id\": \"postman-grpc-1\",\n  \"conversation_id\": \"postman-conversation-1\",\n  \"model\": \"{{model}}\",\n  \"provider\": {\n    \"base_url\": \"{{providerBaseUrl}}\",\n    \"api_key\": \"{{providerApiKey}}\",\n    \"model\": \"{{model}}\"\n  },\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Test gRPC chat with the real provider\" }\n  ]\n}"
-            },
+            "body": { "mode": "raw", "raw": "{\n  \"workspace_id\": \"postman-workspace\",\n  \"request_id\": \"postman-grpc-1\",\n  \"conversation_id\": \"postman-conversation-1\",\n  \"model\": \"{{model}}\",\n  \"provider\": {\n    \"base_url\": \"{{providerBaseUrl}}\",\n    \"api_key\": \"{{providerApiKey}}\",\n    \"model\": \"{{model}}\"\n  },\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Test gRPC chat with the real provider\" }\n  ]\n}" },
             "url": "{{baseUrl}}/health"
-          }
+          },
+          "response": [
+            { "name": "gRPC response example", "status": "OK", "code": 200, "_postman_previewlanguage": "json", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": "{\n  \"message\": {\n    \"id\": \"assistant-message-id\",\n    \"conversation_id\": \"postman-conversation-1\",\n    \"role\": \"assistant\",\n    \"content\": \"Example assistant response from the provider.\",\n    \"created_at\": \"2026-05-16T08:00:00.000Z\",\n    \"tokens\": 8\n  },\n  \"conversation_id\": \"postman-conversation-1\",\n  \"model\": \"gpt-5\",\n  \"prompt_tokens\": 8,\n  \"completion_tokens\": 8\n}", "originalRequest": { "method": "POST", "header": [{ "key": "content-type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"workspace_id\": \"postman-workspace\",\n  \"request_id\": \"postman-grpc-1\",\n  \"conversation_id\": \"postman-conversation-1\",\n  \"model\": \"{{model}}\",\n  \"provider\": {\n    \"base_url\": \"{{providerBaseUrl}}\",\n    \"api_key\": \"{{providerApiKey}}\",\n    \"model\": \"{{model}}\"\n  },\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Test gRPC chat with the real provider\" }\n  ]\n}" }, "url": "{{baseUrl}}/health" } }
+          ]
         },
         {
-          "name": "ActivityService.ListLogs example body",
+          "name": "ActivityService.ListLogs body and saved response",
+          "description": "gRPC address: localhost:5104. Method: simplechat.v1.ActivityService/ListLogs.",
           "request": {
             "method": "POST",
             "header": [{ "key": "content-type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"workspace_id\": \"postman-workspace\",\n  \"page\": 1,\n  \"page_size\": 10\n}" },
             "url": "{{baseUrl}}/health"
-          }
-        },
-        {
-          "name": "ActivityService.RecordLog example body",
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "content-type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"id\": \"postman-log-1\",\n  \"timestamp\": \"2026-05-14T00:00:00.000Z\",\n  \"user\": \"workspace:postman-workspace\",\n  \"service\": \"web-client\",\n  \"action\": \"postman.grpc.record-log\",\n  \"status\": \"success\",\n  \"correlation_id\": \"postman-grpc-1\",\n  \"metadata_json\": \"{\\\"source\\\":\\\"postman\\\"}\"\n}" },
-            "url": "{{baseUrl}}/health"
-          }
+          },
+          "response": [
+            { "name": "gRPC response example", "status": "OK", "code": 200, "_postman_previewlanguage": "json", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": "{\n  \"data\": [\n    {\n      \"id\": \"example-log-id\",\n      \"timestamp\": \"2026-05-16T08:27:45.729Z\",\n      \"user\": \"workspace:postman-workspace\",\n      \"service\": \"api-gateway\",\n      \"action\": \"graphql.request\",\n      \"status\": \"success\",\n      \"correlation_id\": \"example-correlation-id\",\n      \"metadata_json\": \"{\\\"source\\\":\\\"postman\\\"}\"\n    }\n  ],\n  \"page\": 1,\n  \"page_size\": 10,\n  \"total\": 1,\n  \"total_pages\": 1\n}", "originalRequest": { "method": "POST", "header": [{ "key": "content-type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"workspace_id\": \"postman-workspace\",\n  \"page\": 1,\n  \"page_size\": 10\n}" }, "url": "{{baseUrl}}/health" } }
+          ]
         }
       ]
     }

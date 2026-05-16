@@ -257,12 +257,21 @@ Invoke-WebRequest https://web-production-3f2f4.up.railway.app/api/v1/conversatio
 
 ## Postman
 
-Import these files for REST and GraphQL testing:
+Postman workspace created for submission:
+
+```text
+https://go.postman.co/workspace/22e3bdad-1779-4c8a-95cc-4ce0008eba21
+```
+
+It contains the REST, GraphQL, and gRPC test collection plus the hosted environment. If Postman shows the workspace as internal/team-only, open the workspace in Postman, go to `Overview` -> `Settings`, change `Workspace type` to `Public`, and save or submit the approval request.
+
+Local files for import or backup:
 
 | File | Purpose |
 | --- | --- |
-| `postman/soa-clean.postman_collection.json` | REST and GraphQL requests |
-| `postman/soa-clean.postman_environment.json` | Local variables |
+| `postman/soa-clean.postman_collection.json` | REST, GraphQL, and gRPC test guide with saved example responses |
+| `postman/soa-clean.postman_environment.json` | Hosted Railway variables |
+| `postman/README.md` | Postman import, run, publish, and gRPC setup guide |
 
 For gRPC testing, create a Postman gRPC request using `backend/proto/platform.proto`.
 
