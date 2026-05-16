@@ -211,48 +211,6 @@ The `web` service runs both Next.js and the API Gateway to stay within the 5-ser
 
 Kafka should remain an image-based service. If Kafka is connected to the repo, it will try to run `railway-start.sh` with `SERVICE_NAME=kafka` and fail.
 
-## Railway Power Switch
-
-Use this before and after demos to reduce Railway RAM usage and avoid paying for idle services.
-
-```powershell
-npm run railway:status
-npm run railway:pause
-npm run railway:resume
-```
-
-What it does:
-
-| Command | Effect |
-| --- | --- |
-| `npm run railway:status` | Shows current Railway service states |
-| `npm run railway:pause` | Stops `web`, app services, then Kafka |
-| `npm run railway:resume` | Starts Kafka first, then model, activity, chat, and web |
-
-The script requires Railway CLI login or `RAILWAY_TOKEN`:
-
-```powershell
-railway login
-```
-
-Do not pause during a live demo. When paused, the public website is unavailable until `npm run railway:resume` completes.
-
-## Verification
-
-Run these before pushing or deploying:
-
-```bash
-npm run typecheck
-npm run build:backend
-npm run build:frontend
-```
-
-Production smoke checks:
-
-```powershell
-Invoke-WebRequest https://web-production-3f2f4.up.railway.app
-Invoke-WebRequest https://web-production-3f2f4.up.railway.app/api/health
-Invoke-WebRequest https://web-production-3f2f4.up.railway.app/api/v1/conversations
 ```
 
 ## Postman
@@ -262,21 +220,3 @@ Postman workspace created for submission:
 ```text
 https://go.postman.co/workspace/22e3bdad-1779-4c8a-95cc-4ce0008eba21
 ```
-
-It contains the REST, GraphQL, and gRPC test collection plus the hosted environment. If Postman shows the workspace as internal/team-only, open the workspace in Postman, go to `Overview` -> `Settings`, change `Workspace type` to `Public`, and save or submit the approval request.
-
-Local files for import or backup:
-
-| File | Purpose |
-| --- | --- |
-| `postman/soa-clean.postman_collection.json` | REST, GraphQL, and gRPC test guide with saved example responses |
-| `postman/soa-clean.postman_environment.json` | Hosted Railway variables |
-| `postman/README.md` | Postman import, run, publish, and gRPC setup guide |
-
-For gRPC testing, create a Postman gRPC request using `backend/proto/platform.proto`.
-
-| Service | Method | Address |
-| --- | --- | --- |
-| `simplechat.v1.ModelService` | `ListModels` | `localhost:5103` |
-| `simplechat.v1.ChatService` | `SendMessage` | `localhost:5102` |
-| `simplechat.v1.ActivityService` | `ListLogs` | `localhost:5104` |
